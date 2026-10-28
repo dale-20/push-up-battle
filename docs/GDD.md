@@ -6,7 +6,7 @@ Push-Up Battle turns a short bodyweight workout into a five-level arcade campaig
 
 ## Core loop and controls
 
-Choose offline or online, select a level or host/join a match, review the target and time, position the phone, then complete valid push-ups. During desktop prototyping, Space or the large practice button logs a rep. The intended phone control is hands-free pose counting: stable top position → lower past a calibrated threshold → return to the top threshold. The Android camera and pose provider are not yet connected; no claim of automatic phone-based counting should be made until that integration is tested.
+Choose offline or online, select a level or host/join a match, review the target and time, position the phone, then complete valid push-ups. During desktop prototyping, Space or the large practice button logs a rep. The positioning screen has an Android camera preview and framing guide. The intended phone control is hands-free pose counting: stable top position → lower past a calibrated threshold → return to the top threshold. Pose inference is not connected yet; no claim of automatic phone-based counting should be made until that integration is tested.
 
 ## Goals, win/loss and progression
 
@@ -30,7 +30,7 @@ Portrait, high-contrast dark training floor with lime action color and warm oran
 
 ## Risks and next decisions
 
-1. Select an Android camera bridge and pose model; verify permission flow, framing, tracking loss and CPU/heat on multiple phones.
+1. Integrate and validate the selected Android pose-model candidate; verify permission flow, framing, tracking loss and CPU/heat on multiple phones.
 2. Tune pose thresholds with varied body types, camera angles and lighting; reject partial reps and tracking noise.
 3. Test ENet discovery/manual IP entry, firewall behavior, disconnects, score authority, ties and synchronized starts on two phones.
 4. Validate portrait layouts, touch sizing, offline saves and airplane-mode behavior on devices.

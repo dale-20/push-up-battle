@@ -70,10 +70,10 @@ func update_pose(torso_height: float, confidence: float, delta: float) -> void:
 			if movement_delta < DEFAULT_RETURN_DELTA:
 				stable_time += delta
 				if stable_time >= STABLE_SECONDS:
-				reps += 1
-				rep_counted.emit(reps)
-				phase = Phase.AT_TOP
-				stable_time = 0.0
+					reps += 1
+					rep_counted.emit(reps)
+					phase = Phase.AT_TOP
+					stable_time = 0.0
 			elif movement_delta >= DEFAULT_DOWN_DELTA:
 				phase = Phase.AT_BOTTOM
 				stable_time = 0.0

@@ -25,6 +25,7 @@ var elapsed := 0.0
 var countdown := 0.0
 var opponent_score := 0
 var opponent_status := "Waiting for opponent"
+var tracker_message := "Camera pose counting is not connected. Use the practice input."
 var match_id := ""
 var match_active := false
 var match_finished := false
@@ -35,6 +36,7 @@ var lobby_status: Label
 var current_content: VBoxContainer
 var screen_name := "title"
 var _rep_tracker := RepTracker.new()
+var _sound_player: AudioStreamPlayer
 
 func _ready() -> void:
 	_load_save()
@@ -45,6 +47,10 @@ func _ready() -> void:
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	_rep_tracker.rep_counted.connect(_on_detected_rep)
+	_rep_tracker.tracking_changed.connect(_on_tracking_changed)
+	_sound_player = AudioStreamPlayer.new()
+	_sound_player.stream = _make_tone()
+	add_child(_sound_player)
 	_show_screen("title")
 
 func _process(delta: float) -> void:
@@ -202,7 +208,8 @@ func _build_calibration() -> void:
 	var data: Dictionary = LEVELS[current_level - 1]
 	current_content.add_child(_label("LEVEL %02d  /  %d REPS" % [current_level, data.goal], 24, LIME))
 	current_content.add_child(_label("TIME LIMIT   %d SECONDS" % data.seconds, 16, ORANGE))
-	current_content.add_child(_card("CAMERA SETUP", "Prop your phone in portrait mode. Fit your shoulders, hips and knees inside the frame. The camera integration is not connected in this build; use the practice rep button during play."))
+	current_content.add_child(preload("res://scripts/camera_preview.gd").new())
+	current_content.add_child(_card("POSITIONING", "Prop the phone in portrait mode at a side angle. Fit shoulders, hips and knees in the guide. Keep the phone stable and the floor clear."))
 	current_content.add_child(_label("READY CHECK", 14, MUTED))
 	current_content.add_child(_label("☐  Phone stable   ☐  Full body in frame   ☐  Clear floor", 15, Color.WHITE))
 	current_content.add_child(_button("I'M READY  →", _start_challenge, true))
@@ -225,6 +232,9 @@ func _build_game() -> void:
 		current_content.add_child(rival)
 	else:
 		current_content.add_child(_label("STEADY DOWN. FULL RETURN.", 14, MUTED))
+	var tracking_label := _label(tracker_message, 13, ORANGE if not _rep_tracker.tracked else LIME)
+	tracking_label.name = "TrackingStatus"
+	current_content.add_child(tracking_label)
 	current_content.add_child(_button("LOG PRACTICE REP  +1", _log_rep, true))
 	current_content.add_child(_label("Practice input for this prototype. Connect the local pose adapter to count movement.", 12, MUTED))
 	current_content.add_child(_button("PAUSE", _pause_game, false))
@@ -298,6 +308,7 @@ func _log_rep() -> void:
 	if not match_active or screen_name != "game":
 		return
 	reps += 1
+	_play_sound(1.0)
 	_refresh_game_labels()
 	if mode == "online" and multiplayer.multiplayer_peer != null:
 		if multiplayer.is_server():
@@ -330,18 +341,29 @@ func receive_score(score: int, id: String) -> void:
 func _on_detected_rep(total: int) -> void:
 	if match_active and total > reps:
 		reps = total
+		_play_sound(1.0)
 		_refresh_game_labels()
+
+func _on_tracking_changed(is_tracking: bool) -> void:
+	tracker_message = "Body tracked. Complete a full down-and-up rep." if is_tracking else "Tracking paused. Re-enter the frame and hold the top position."
+	var tracking_label := find_child("TrackingStatus", true, false) as Label
+	if tracking_label:
+		tracking_label.text = tracker_message
+		tracking_label.add_theme_color_override("font_color", LIME if is_tracking else ORANGE)
 
 func _refresh_game_labels() -> void:
 	var rep_label := find_child("RepValue", true, false) as Label
 	var timer_label := find_child("TimerValue", true, false) as Label
 	var opponent_label := find_child("OpponentValue", true, false) as Label
+	var tracking_label := find_child("TrackingStatus", true, false) as Label
 	if rep_label:
 		rep_label.text = "%02d" % reps
 	if timer_label:
 		timer_label.text = "START IN %d" % ceili(countdown) if countdown > 0.0 else "%02d SEC" % ceili(remaining)
 	if opponent_label:
 		opponent_label.text = "RIVAL   %02d   •   %s" % [opponent_score, opponent_status]
+	if tracking_label:
+		tracking_label.text = tracker_message
 
 func _end_offline_challenge() -> void:
 	match_active = false
@@ -349,6 +371,9 @@ func _end_offline_challenge() -> void:
 	if reps >= LEVELS[current_level - 1].goal:
 		highest_unlocked = mini(LEVELS.size(), maxi(highest_unlocked, current_level + 1))
 		_save_data()
+		_play_sound(1.45)
+	else:
+		_play_sound(0.72)
 	_show_screen("result", "Your result", "05 / Score")
 
 func _finish_online_match() -> void:
@@ -551,8 +576,34 @@ func _button(text: String, action: Callable, primary := false) -> Button:
 	button.add_theme_stylebox_override("hover", hover)
 	button.add_theme_stylebox_override("pressed", hover)
 	button.add_theme_stylebox_override("disabled", normal)
+	button.pressed.connect(_play_button_sound)
 	button.pressed.connect(action)
 	return button
+
+func _play_button_sound() -> void:
+	_play_sound(1.15)
+
+func _play_sound(pitch: float) -> void:
+	if not sound_enabled or not is_instance_valid(_sound_player):
+		return
+	_sound_player.pitch_scale = pitch
+	_sound_player.play()
+
+func _make_tone() -> AudioStreamWAV:
+	const SAMPLE_RATE := 22050
+	const FRAME_COUNT := 2205
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = SAMPLE_RATE
+	wav.stereo = false
+	var samples := PackedByteArray()
+	samples.resize(FRAME_COUNT * 2)
+	for frame in range(FRAME_COUNT):
+		var envelope := 1.0 - float(frame) / FRAME_COUNT
+		var sample := sin(TAU * 660.0 * float(frame) / SAMPLE_RATE) * envelope * 0.18
+		samples.encode_s16(frame * 2, int(sample * 32767.0))
+	wav.data = samples
+	return wav
 
 func _label(text: String, size: int, color: Color) -> Label:
 	var label := Label.new()

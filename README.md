@@ -12,7 +12,8 @@ Open this folder in Godot 4.7 or later and run the project. The project is set t
 - Settings and credits screens are included.
 - Online host/join uses Godot ENet on port `27045`. The host starts the shared level and publishes the match result. Both phones must be on the same Wi-Fi; the joining player enters the host's local IP.
 - `scripts/rep_tracker.gd` implements a calibrated top → down → return cycle with separate thresholds, confidence gating and stability checks.
-- **Android camera capture and pose inference are not integrated yet.** The challenge currently exposes a practice rep input. Choose and validate an Android camera/pose plugin and model on the team's phones, then feed normalized torso height and confidence into `RepTracker.update_pose()`.
+- `scripts/camera_preview.gd` requests Android camera permission on the positioning screen and displays a local preview with a framing guide. No frames are saved or transmitted.
+- **Pose inference is not integrated yet.** The challenge still exposes a practice rep input. Choose and validate an Android pose plugin/model on the team's phones, then feed normalized torso height and confidence into `RepTracker.update_pose()`.
 - The online prototype shares score data but still needs testing on two physical phones, including network failure, simultaneous completion and host validation against forged scores.
 
 Raw video is not part of the multiplayer protocol. A real pose provider should run locally and must not upload or persist camera frames.
@@ -23,6 +24,8 @@ Raw video is not part of the multiplayer protocol. A real pose provider should r
 scenes/main.tscn       Main app scene
 scripts/main.gd        Screens, campaign, local save and ENet match flow
 scripts/rep_tracker.gd Rep cycle state machine for a local pose provider
+scripts/camera_preview.gd Android permission flow and local preview
+scripts/camera_guide.gd Framing overlay
 docs/GDD.md            One-page game design document
 docs/CREDITS.md        Asset and license record
 docs/PHONE_TEST_MATRIX.md  Device test template
@@ -31,7 +34,7 @@ docs/PLAYTEST.md       Consent, observation and iteration templates
 
 ## Export
 
-Configure an Android export preset in Godot, install the Android export templates and SDK, then export an APK for device testing. The project does not include a signing key or export preset. Install on at least two phones before collecting lab evidence. Grant camera permission only after a camera provider is integrated.
+An Android export preset with Camera permission is included in `export_presets.cfg`. Install the Android export templates and SDK in Godot, then export an APK to `build/android/PushUpBattle.apk`. Install on at least two phones before collecting lab evidence. The APK is not included yet.
 
 ## Team evidence
 

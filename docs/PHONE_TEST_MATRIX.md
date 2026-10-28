@@ -15,4 +15,4 @@ Fill one row for each actual device/run. Do not infer results from editor or emu
 - Pair two phones on the same Wi-Fi, host and join, finish a match, and compare result screens.
 - Record an unreachable-host attempt and a disconnect during play.
 - Observe text, buttons, orientation, frame pacing and device heat during a session.
-- Camera checks are pending until the Android camera/pose provider is integrated.
+- Camera permission and preview, plus pose checks, still need real Android device validation. Pose inference is not integrated yet.
