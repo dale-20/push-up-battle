@@ -240,10 +240,12 @@ func _build_result() -> void:
 	var goal: int = LEVELS[current_level - 1].goal
 	var cleared := reps >= goal
 	current_content.add_child(_label("LEVEL %02d" % current_level, 15, MUTED))
-	current_content.add_child(_label("LEVEL CLEARED" if cleared else "TRY AGAIN", 34, LIME if cleared else ORANGE))
-	current_content.add_child(_card("YOUR RESULT", "%d / %d valid reps   •   %.1f sec elapsed" % [reps, goal, elapsed]))
 	if mode == "online":
-		current_content.add_child(_card("MATCH RESULT", "You: %d   /   Rival: %d\n%s" % [reps, opponent_score, _online_outcome()]))
+		current_content.add_child(_label("MATCH COMPLETE", 34, LIME))
+		current_content.add_child(_card("MATCH RESULT", "You: %d   /   Rival: %d\n%s   •   %.1f sec" % [reps, opponent_score, _online_outcome(), elapsed]))
+	else:
+		current_content.add_child(_label("LEVEL CLEARED" if cleared else "TRY AGAIN", 34, LIME if cleared else ORANGE))
+		current_content.add_child(_card("YOUR RESULT", "%d / %d valid reps   •   %.1f sec elapsed" % [reps, goal, elapsed]))
 	current_content.add_child(_button("RETRY", _restart_challenge, true))
 	if cleared and mode == "offline" and current_level < LEVELS.size():
 		current_content.add_child(_button("NEXT LEVEL  →", func(): _prepare_level(current_level + 1), false))
