@@ -22,6 +22,7 @@ var mode := "offline"
 var reps := 0
 var remaining := 0.0
 var elapsed := 0.0
+var countdown := 0.0
 var opponent_score := 0
 var opponent_status := "Waiting for opponent"
 var match_id := ""
@@ -48,6 +49,10 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if screen_name != "game" or not match_active:
+		return
+	if countdown > 0.0:
+		countdown = maxf(0.0, countdown - delta)
+		_refresh_game_labels()
 		return
 	remaining = maxf(0.0, remaining - delta)
 	elapsed += delta
@@ -210,7 +215,7 @@ func _build_game() -> void:
 	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	current_content.add_child(count)
 	current_content.add_child(_label("VALID REPS", 14, MUTED))
-	var timer_label := _label("%02d SEC" % ceili(remaining), 38, Color.WHITE)
+	var timer_label := _label("START IN %d" % ceili(countdown) if countdown > 0.0 else "%02d SEC" % ceili(remaining), 38, Color.WHITE)
 	timer_label.name = "TimerValue"
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	current_content.add_child(timer_label)
@@ -271,6 +276,7 @@ func _start_challenge() -> void:
 	opponent_status = "Ready"
 	remaining = data.seconds
 	elapsed = 0.0
+	countdown = 3.0 if mode == "online" else 0.0
 	match_finished = false
 	match_active = true
 	_rep_tracker.reset()
@@ -331,7 +337,7 @@ func _refresh_game_labels() -> void:
 	if rep_label:
 		rep_label.text = "%02d" % reps
 	if timer_label:
-		timer_label.text = "%02d SEC" % ceili(remaining)
+		timer_label.text = "START IN %d" % ceili(countdown) if countdown > 0.0 else "%02d SEC" % ceili(remaining)
 	if opponent_label:
 		opponent_label.text = "RIVAL   %02d   •   %s" % [opponent_score, opponent_status]
 
