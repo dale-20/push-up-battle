@@ -9,6 +9,7 @@ Fill one row for each actual device/run. Do not infer results from editor or emu
 
 ## Run checklist
 
+- A debug APK is available at `build/android/PushUpBattle.apk`; install and test it on each phone before recording outcomes.
 - Install the exported APK and launch it from a clean state.
 - Complete Level 1, force-close and reopen; verify Level 2 is unlocked.
 - Enable airplane mode and play all five levels; note any dependency or error.

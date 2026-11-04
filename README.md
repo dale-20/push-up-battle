@@ -15,6 +15,7 @@ Open this folder in Godot 4.7 or later and run the project. The project is set t
 - `scripts/camera_preview.gd` requests Android camera permission on the positioning screen and displays a local preview with a framing guide. No frames are saved or transmitted.
 - **Pose inference is not integrated yet.** The challenge still exposes a practice rep input. Choose and validate an Android pose plugin/model on the team's phones, then feed normalized torso height and confidence into `RepTracker.update_pose()`.
 - The online prototype shares score data but still needs testing on two physical phones, including network failure, simultaneous completion and host validation against forged scores.
+- A debug APK was exported successfully with Godot 4.7.2 to `build/android/PushUpBattle.apk`. No Android phone was connected for installation or camera-preview validation.
 
 Raw video is not part of the multiplayer protocol. A real pose provider should run locally and must not upload or persist camera frames.
 
@@ -34,7 +35,7 @@ docs/PLAYTEST.md       Consent, observation and iteration templates
 
 ## Export
 
-An Android export preset with Camera permission is included in `export_presets.cfg`. Install the Android export templates and SDK in Godot, then export an APK to `build/android/PushUpBattle.apk`. Install on at least two phones before collecting lab evidence. The APK is not included yet.
+An Android export preset with Camera permission is included in `export_presets.cfg`. Configure a JDK and Android SDK in Godot, install matching export templates, then export an APK to `build/android/PushUpBattle.apk`. Install on at least two phones before collecting lab evidence.
 
 ## Team evidence
 
