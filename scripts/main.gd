@@ -14,9 +14,20 @@ const PANEL := Color("1a292c")
 const MUTED := Color("9caeaa")
 const LIME := Color("d5fa70")
 const ORANGE := Color("ff895f")
+## Screens that keep the pose camera running between them.
+const CAMERA_SCREENS := ["calibration", "game", "pause", "result"]
 
+## Seconds to get into position before an offline level (and after resuming).
+const OFFLINE_GET_READY := 5.0
+const RESUME_GET_READY := 3.0
+
+## Overridable so tests never touch the player's real save.
+var save_path := SAVE_PATH
 var highest_unlocked := 1
 var sound_enabled := true
+## Per-level campaign stats: level number -> {attempts, clears, best}.
+var level_stats := {}
+var _last_countdown_tick := 0
 var current_level := 1
 var mode := "offline"
 var reps := 0
@@ -25,7 +36,7 @@ var elapsed := 0.0
 var countdown := 0.0
 var opponent_score := 0
 var opponent_status := "Waiting for opponent"
-var tracker_message := "Camera pose counting is not connected. Use the practice input."
+var tracker_message := ""
 var match_id := ""
 var match_active := false
 var match_finished := false
@@ -48,6 +59,7 @@ func _ready() -> void:
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	_rep_tracker.rep_counted.connect(_on_detected_rep)
 	_rep_tracker.tracking_changed.connect(_on_tracking_changed)
+	Pose.pose_sample.connect(_on_pose_sample)
 	_sound_player = AudioStreamPlayer.new()
 	_sound_player.stream = _make_tone()
 	add_child(_sound_player)
@@ -58,6 +70,11 @@ func _process(delta: float) -> void:
 		return
 	if countdown > 0.0:
 		countdown = maxf(0.0, countdown - delta)
+		var tick := ceili(countdown)
+		if tick != _last_countdown_tick:
+			_last_countdown_tick = tick
+			# Audible countdown: the player is on the floor, not watching the screen.
+			_play_sound(1.9 if tick == 0 else 0.9)
 		_refresh_game_labels()
 		return
 	remaining = maxf(0.0, remaining - delta)
@@ -71,18 +88,16 @@ func _process(delta: float) -> void:
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
-		if screen_name == "game":
-			_pause_game()
-		elif screen_name == "pause":
-			_resume_game()
-		elif screen_name not in ["title", "menu"]:
-			_return_to_menu()
+		if screen_name not in ["title", "menu"]:
+			_go_back()
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE and screen_name == "game":
 		_log_rep()
 
 func _show_screen(which: String, heading := "", eyebrow := "") -> void:
 	screen_name = which
+	if which not in CAMERA_SCREENS:
+		Pose.stop()
 	for child in get_children():
 		child.queue_free()
 	var background := ColorRect.new()
@@ -181,8 +196,13 @@ func _build_levels() -> void:
 		var level_num := i + 1
 		var data: Dictionary = LEVELS[i]
 		var locked := level_num > highest_unlocked
-		var title := "LEVEL %02d     %s" % [level_num, "LOCKED" if locked else "READY"]
-		var tile := _button("%s\n%d REPS  /  %d SEC" % [title, data.goal, data.seconds], func(): _prepare_level(level_num), not locked)
+		var stats := get_level_stats(level_num)
+		var state := "LOCKED" if locked else ("CLEARED" if stats.clears > 0 else "READY")
+		var title := "LEVEL %02d     %s" % [level_num, state]
+		var detail := "%d REPS  /  %d SEC" % [data.goal, data.seconds]
+		if stats.attempts > 0:
+			detail += "  •  BEST %d" % stats.best
+		var tile := _button("%s\n%s" % [title, detail], func(): _prepare_level(level_num), not locked)
 		tile.custom_minimum_size.y = 94
 		tile.disabled = locked
 		current_content.add_child(tile)
@@ -232,11 +252,19 @@ func _build_game() -> void:
 		current_content.add_child(rival)
 	else:
 		current_content.add_child(_label("STEADY DOWN. FULL RETURN.", 14, MUTED))
+	if tracker_message == "":
+		tracker_message = _default_tracker_message()
 	var tracking_label := _label(tracker_message, 13, ORANGE if not _rep_tracker.tracked else LIME)
 	tracking_label.name = "TrackingStatus"
 	current_content.add_child(tracking_label)
-	current_content.add_child(_button("LOG PRACTICE REP  +1", _log_rep, true))
-	current_content.add_child(_label("Practice input for this prototype. Connect the local pose adapter to count movement.", 12, MUTED))
+	if Pose.available:
+		var preview := preload("res://scripts/camera_preview.gd").new()
+		preview.preview_height = 200.0
+		preview.show_title = false
+		current_content.add_child(preview)
+	else:
+		current_content.add_child(_button("LOG PRACTICE REP  +1", _log_rep, true))
+		current_content.add_child(_label("Practice input: this build has no pose tracker, so reps are logged by hand.", 12, MUTED))
 	current_content.add_child(_button("PAUSE", _pause_game, false))
 
 func _build_pause() -> void:
@@ -254,8 +282,15 @@ func _build_result() -> void:
 		current_content.add_child(_label("MATCH COMPLETE", 34, LIME))
 		current_content.add_child(_card("MATCH RESULT", "You: %d   /   Rival: %d\n%s   •   %.1f sec" % [reps, opponent_score, _online_outcome(), elapsed]))
 	else:
-		current_content.add_child(_label("LEVEL CLEARED" if cleared else "TRY AGAIN", 34, LIME if cleared else ORANGE))
-		current_content.add_child(_card("YOUR RESULT", "%d / %d valid reps   •   %.1f sec elapsed" % [reps, goal, elapsed]))
+		var campaign_done := cleared and current_level == LEVELS.size()
+		var headline := "CAMPAIGN COMPLETE" if campaign_done else ("LEVEL CLEARED" if cleared else "TRY AGAIN")
+		current_content.add_child(_label(headline, 34, LIME if cleared else ORANGE))
+		var stats := get_level_stats(current_level)
+		current_content.add_child(_card("YOUR RESULT", "%d / %d valid reps   •   %.1f sec elapsed\nBest %d   •   Attempt %d" % [reps, goal, elapsed, stats.best, stats.attempts]))
+		if campaign_done:
+			current_content.add_child(_card("ALL FIVE LEVELS", "You cleared the full campaign. Replay any level to beat your best."))
+		elif not cleared:
+			current_content.add_child(_label("Need %d more. Go all the way down and fully back up for each rep." % (goal - reps), 14, MUTED))
 	current_content.add_child(_button("RETRY", _restart_challenge, true))
 	if cleared and mode == "offline" and current_level < LEVELS.size():
 		current_content.add_child(_button("NEXT LEVEL  →", func(): _prepare_level(current_level + 1), false))
@@ -288,10 +323,12 @@ func _start_challenge() -> void:
 	opponent_status = "Ready"
 	remaining = data.seconds
 	elapsed = 0.0
-	countdown = 3.0 if mode == "online" else 0.0
+	countdown = 3.0 if mode == "online" else OFFLINE_GET_READY
+	_last_countdown_tick = ceili(countdown)
 	match_finished = false
 	match_active = true
 	_rep_tracker.reset()
+	tracker_message = ""
 	if mode == "online" and multiplayer.is_server():
 		match_id = str(Time.get_ticks_usec())
 		rpc("begin_remote_match", current_level, match_id)
@@ -305,9 +342,12 @@ func begin_remote_match(level_num: int, id: String) -> void:
 	_start_challenge()
 
 func _log_rep() -> void:
-	if not match_active or screen_name != "game":
+	if not match_active or screen_name != "game" or countdown > 0.0:
 		return
-	reps += 1
+	_apply_rep(reps + 1)
+
+func _apply_rep(total: int) -> void:
+	reps = total
 	_play_sound(1.0)
 	_refresh_game_labels()
 	if mode == "online" and multiplayer.multiplayer_peer != null:
@@ -339,13 +379,24 @@ func receive_score(score: int, id: String) -> void:
 	_refresh_game_labels()
 
 func _on_detected_rep(total: int) -> void:
-	if match_active and total > reps:
-		reps = total
-		_play_sound(1.0)
-		_refresh_game_labels()
+	if match_active and screen_name == "game" and total > reps:
+		_apply_rep(total)
+
+func _on_pose_sample(depth: float, confidence: float, dt: float) -> void:
+	if screen_name != "game" or not match_active or countdown > 0.0:
+		return
+	_rep_tracker.update_pose(depth, confidence, dt)
+
+func _default_tracker_message() -> String:
+	if Pose.available:
+		return "Get side-on to the phone and hold the top position to start counting."
+	return "No pose tracker in this build. Use the practice input."
 
 func _on_tracking_changed(is_tracking: bool) -> void:
-	tracker_message = "Body tracked. Complete a full down-and-up rep." if is_tracking else "Tracking paused. Re-enter the frame and hold the top position."
+	if is_tracking:
+		tracker_message = "Body tracked. Complete a full down-and-up rep."
+	else:
+		tracker_message = "Counting paused. " + Pose.reason_hint(Pose.last_reason)
 	var tracking_label := find_child("TrackingStatus", true, false) as Label
 	if tracking_label:
 		tracking_label.text = tracker_message
@@ -368,12 +419,16 @@ func _refresh_game_labels() -> void:
 func _end_offline_challenge() -> void:
 	match_active = false
 	remaining = maxf(0.0, remaining)
-	if reps >= LEVELS[current_level - 1].goal:
+	var cleared: bool = reps >= LEVELS[current_level - 1].goal
+	var stats := get_level_stats(current_level)
+	stats.attempts += 1
+	stats.best = maxi(stats.best, reps)
+	if cleared:
+		stats.clears += 1
 		highest_unlocked = mini(LEVELS.size(), maxi(highest_unlocked, current_level + 1))
-		_save_data()
-		_play_sound(1.45)
-	else:
-		_play_sound(0.72)
+	level_stats[current_level] = stats
+	_save_data()
+	_play_sound(1.45 if cleared else 0.72)
 	_show_screen("result", "Your result", "05 / Score")
 
 func _finish_online_match() -> void:
@@ -425,6 +480,10 @@ func _resume_game() -> void:
 	if screen_name != "pause":
 		return
 	match_active = true
+	if mode == "offline":
+		# Give the player time to get back into position before the clock runs.
+		countdown = RESUME_GET_READY
+		_last_countdown_tick = ceili(countdown)
 	_show_screen("game", "Challenge on", "04 / Move")
 
 func _restart_challenge() -> void:
@@ -540,22 +599,63 @@ func _disconnect_peer() -> void:
 	_remote_winner = ""
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+	match what:
+		NOTIFICATION_WM_CLOSE_REQUEST:
+			_save_data()
+			_disconnect_peer()
+			get_tree().quit()
+		NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT:
+			# A call or app switch must not burn the level timer.
+			if screen_name == "game" and mode == "offline":
+				_pause_game()
+			_save_data()
+		NOTIFICATION_WM_GO_BACK_REQUEST:
+			_go_back()
+
+## Android back button / Escape: pause a level, step back from a screen, or quit from the menu.
+func _go_back() -> void:
+	if screen_name == "game":
+		_pause_game()
+	elif screen_name == "pause":
+		_resume_game()
+	elif screen_name in ["title", "menu"]:
 		_save_data()
 		_disconnect_peer()
 		get_tree().quit()
+	else:
+		_return_to_menu()
+
+func get_level_stats(level_num: int) -> Dictionary:
+	var stats: Dictionary = level_stats.get(level_num, {})
+	return {
+		"attempts": int(stats.get("attempts", 0)),
+		"clears": int(stats.get("clears", 0)),
+		"best": int(stats.get("best", 0)),
+	}
 
 func _load_save() -> void:
 	var cfg := ConfigFile.new()
-	if cfg.load(SAVE_PATH) == OK:
-		highest_unlocked = clampi(int(cfg.get_value("progress", "highest_unlocked", 1)), 1, LEVELS.size())
-		sound_enabled = bool(cfg.get_value("settings", "sound_enabled", true))
+	if cfg.load(save_path) != OK:
+		return
+	highest_unlocked = clampi(int(cfg.get_value("progress", "highest_unlocked", 1)), 1, LEVELS.size())
+	sound_enabled = bool(cfg.get_value("settings", "sound_enabled", true))
+	level_stats.clear()
+	for level_num in range(1, LEVELS.size() + 1):
+		var key := "level_%d" % level_num
+		if cfg.has_section_key("stats", key) and cfg.get_value("stats", key) is Dictionary:
+			level_stats[level_num] = cfg.get_value("stats", key)
+			level_stats[level_num] = get_level_stats(level_num)
 
 func _save_data() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("progress", "highest_unlocked", highest_unlocked)
 	cfg.set_value("settings", "sound_enabled", sound_enabled)
-	cfg.save(SAVE_PATH)
+	for level_num in level_stats:
+		cfg.set_value("stats", "level_%d" % level_num, get_level_stats(level_num))
+	# Write to a temp file then swap it in, so a crash mid-save can't corrupt progress.
+	var temp_path := save_path + ".tmp"
+	if cfg.save(temp_path) == OK:
+		DirAccess.rename_absolute(temp_path, save_path)
 
 func _button(text: String, action: Callable, primary := false) -> Button:
 	var button := Button.new()

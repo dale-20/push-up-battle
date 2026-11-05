@@ -11,13 +11,13 @@ Open this folder in Godot 4.7 or later and run the project. The project is set t
 - Offline campaign, level goals/timers, results, retry/next/menu actions and saved unlocks are implemented.
 - Settings and credits screens are included.
 - Online host/join uses Godot ENet on port `27045`. The host starts the shared level and publishes the match result. Both phones must be on the same Wi-Fi; the joining player enters the host's local IP.
-- `scripts/rep_tracker.gd` implements a calibrated top → down → return cycle with separate thresholds, confidence gating and stability checks.
-- `scripts/camera_preview.gd` requests Android camera permission on the positioning screen and displays a local preview with a framing guide. No frames are saved or transmitted.
-- **Pose inference is not integrated yet.** The challenge still exposes a practice rep input. Choose and validate an Android pose plugin/model on the team's phones, then feed normalized torso height and confidence into `RepTracker.update_pose()`.
+- **Pose tracking:** the `PushUpPose` Android plugin (`android-plugin/`) runs Google ML Kit's bundled pose model on the phone through CameraX. `scripts/pose_provider.gd` (autoload `Pose`) turns landmarks into a depth signal that drives `scripts/rep_tracker.gd` (top → down → return cycle with confidence gating). When tracking is lost, the in-progress rep is discarded and the game shows a recovery hint. Thresholds still need tuning on real phones; see `docs/TECHNICAL_DECISIONS.md`.
+- `scripts/camera_preview.gd` shows the plugin's local preview with a pose skeleton and framing guide. Builds without the plugin (desktop) show the practice rep input instead.
+- Headless tests: `godot --headless --path . --script res://tests/test_rep_tracker.gd` (also `test_main_flow.gd`).
 - The online prototype shares score data but still needs testing on two physical phones, including network failure, simultaneous completion and host validation against forged scores.
-- A debug APK was exported successfully with Godot 4.7.2 to `build/android/PushUpBattle.apk`. No Android phone was connected for installation or camera-preview validation.
+- Camera, pose and install behavior have not yet been verified on an Android phone.
 
-Raw video is not part of the multiplayer protocol. A real pose provider should run locally and must not upload or persist camera frames.
+Raw video is not part of the multiplayer protocol. Pose detection runs locally; camera frames are never uploaded or saved.
 
 ## Project map
 
@@ -35,7 +35,13 @@ docs/PLAYTEST.md       Consent, observation and iteration templates
 
 ## Export
 
-An Android export preset with Camera permission is included in `export_presets.cfg`. Configure a JDK and Android SDK in Godot, install matching export templates, then export an APK to `build/android/PushUpBattle.apk`. Install on at least two phones before collecting lab evidence.
+The Android export preset (`export_presets.cfg`) has Camera permission enabled and uses Gradle build, which the pose plugin requires. One-time setup:
+
+1. In Godot's Editor Settings, set the JDK 17 path and the Android SDK path. The SDK needs platform-tools, build-tools 36.1.0 and platform android-36.
+2. Install the Godot 4.7 export templates, then run **Project → Install Android Build Template**. If you export from the command line (`--headless --export-debug`), add `org.gradle.daemon=false` to `android/build/gradle.properties`. Otherwise the export hangs after Gradle finishes.
+3. Build the plugin: `cd android-plugin` and `gradlew :plugin:assemble`. This writes the AARs to `addons/pushup_pose/bin/`.
+
+Then export to `build/android/PushUpBattle.apk` and install it on at least two phones before collecting lab evidence.
 
 ## Team evidence
 

@@ -4,3 +4,9 @@
 
 # Exported builds
 /build/
+
+# Android plugin build outputs
+/android-plugin/.gradle/
+/android-plugin/build/
+/android-plugin/plugin/build/
+/android-plugin/local.properties

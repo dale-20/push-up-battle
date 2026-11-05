@@ -1,0 +1,4 @@
+// Versions match the Godot 4.7 Android build template (android/build/config.gradle).
+plugins {
+    id "com.android.library" version "8.6.1" apply false
+}
