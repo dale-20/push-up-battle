@@ -17,17 +17,26 @@ const ORANGE := Color("ff895f")
 ## Screens that keep the pose camera running between them.
 const CAMERA_SCREENS := ["calibration", "game", "pause", "result"]
 
-## Seconds to get into position before an offline level (and after resuming).
+## Seconds to get into position before a level or match (and after resuming).
 const OFFLINE_GET_READY := 5.0
+const ONLINE_GET_READY := 5.0
 const RESUME_GET_READY := 3.0
+## Give up on an unanswered join after this many seconds.
+const CONNECT_TIMEOUT := 8.0
+## ENet peer timeout (ms): a phone that drops off Wi-Fi is noticed within this.
+const PEER_TIMEOUT_MIN_MS := 3000
+const PEER_TIMEOUT_MAX_MS := 8000
 
 ## Overridable so tests never touch the player's real save.
 var save_path := SAVE_PATH
+## Overridable so tests can host on loopback only.
+var host_bind_ip := "*"
+## Tests only: shortens matches. 0 uses the level's time limit.
+var match_seconds_override := 0.0
 var highest_unlocked := 1
 var sound_enabled := true
 ## Per-level campaign stats: level number -> {attempts, clears, best}.
 var level_stats := {}
-var _last_countdown_tick := 0
 var current_level := 1
 var mode := "offline"
 var reps := 0
@@ -41,6 +50,12 @@ var match_id := ""
 var match_active := false
 var match_finished := false
 var peer_connected := false
+## Host only: plausibility check for the guest's reported reps.
+var score_validator := ScoreValidator.new()
+## Guest-update rejections for the last match, as reported by the host.
+var rejected_updates := 0
+## Why the last online match ended early ("" if it finished normally).
+var disconnect_reason := ""
 var lobby_address: LineEdit
 var host_button: Button
 var lobby_status: Label
@@ -48,6 +63,9 @@ var current_content: VBoxContainer
 var screen_name := "title"
 var _rep_tracker := RepTracker.new()
 var _sound_player: AudioStreamPlayer
+var _last_countdown_tick := 0
+var _grace_time := 0.0
+var _connect_attempt := 0
 
 func _ready() -> void:
 	_load_save()
@@ -77,13 +95,20 @@ func _process(delta: float) -> void:
 			_play_sound(1.9 if tick == 0 else 0.9)
 		_refresh_game_labels()
 		return
-	remaining = maxf(0.0, remaining - delta)
-	elapsed += delta
-	_refresh_game_labels()
-	if remaining <= 0.0:
-		if mode == "offline":
-			_end_offline_challenge()
-		elif multiplayer.is_server() and not match_finished:
+	if remaining > 0.0:
+		remaining = maxf(0.0, remaining - delta)
+		elapsed += delta
+		if remaining <= 0.0:
+			_play_sound(0.72)
+		_refresh_game_labels()
+	if remaining > 0.0:
+		return
+	if mode == "offline":
+		_end_offline_challenge()
+	elif multiplayer.is_server() and not match_finished:
+		# Wait briefly for guest reps already in flight before deciding.
+		_grace_time += delta
+		if _grace_time >= ScoreValidator.LATE_GRACE_SECONDS:
 			_finish_online_match()
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -99,7 +124,8 @@ func _show_screen(which: String, heading := "", eyebrow := "") -> void:
 	if which not in CAMERA_SCREENS:
 		Pose.stop()
 	for child in get_children():
-		child.queue_free()
+		if child != _sound_player:
+			child.queue_free()
 	var background := ColorRect.new()
 	background.color = INK
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -120,7 +146,7 @@ func _show_screen(which: String, heading := "", eyebrow := "") -> void:
 	var brand := _label("UP / DOWN", 15, LIME)
 	brand.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(brand)
-	if which not in ["title", "menu"]:
+	if which not in ["title", "menu"] and not (mode == "online" and which == "game"):
 		var back := _button("‹  BACK", Callable(self, "_return_to_menu"), false)
 		back.custom_minimum_size = Vector2(100, 48)
 		top.add_child(back)
@@ -176,7 +202,7 @@ func _build_menu() -> void:
 	current_content.add_child(_button("PLAY", func(): _show_screen("mode", "Choose your arena", "01 / Select mode"), true))
 	current_content.add_child(_button("SETTINGS", func(): _show_screen("settings", "Your preferences", "02 / Settings")))
 	current_content.add_child(_button("CREDITS", func(): _show_screen("credits", "Made to move", "03 / Credits")))
-	current_content.add_child(_card("CAMERA PRIVACY", "Pose tracking is designed to run on your phone. Video is never sent with match scores."))
+	current_content.add_child(_card("CAMERA PRIVACY", "Pose tracking runs on your phone. Video is never saved or sent; matches share only rep counts."))
 
 func _build_mode() -> void:
 	current_content.add_child(_label("HOW DO YOU WANT TO PLAY?", 21, Color.WHITE))
@@ -187,9 +213,9 @@ func _build_mode() -> void:
 	current_content.add_child(_label("Five campaign levels. Your unlocks stay on this device.", 15, MUTED))
 	current_content.add_child(_button("PLAY ONLINE", func():
 		mode = "online"
-		_show_screen("lobby", "Find your rival", "02 / Same Wi-Fi")
+		_show_lobby("Host a match, or enter the host phone's IP to join.", true)
 	, false))
-	current_content.add_child(_label("Host a match or join a host by local IP address.", 15, MUTED))
+	current_content.add_child(_label("Same Wi-Fi duel. Online results never change campaign unlocks.", 15, MUTED))
 
 func _build_levels() -> void:
 	for i in range(LEVELS.size()):
@@ -210,8 +236,9 @@ func _build_levels() -> void:
 
 func _build_lobby() -> void:
 	current_content.add_child(_label("TWO PLAYERS. SAME CHALLENGE.", 19, Color.WHITE))
-	current_content.add_child(_label("Both phones must be on the same Wi-Fi. The host decides the result.", 14, MUTED))
+	current_content.add_child(_label("Both phones must be on the same Wi-Fi. Most valid reps when time runs out wins.", 14, MUTED))
 	lobby_status = _label(opponent_status, 15, LIME)
+	lobby_status.name = "LobbyStatus"
 	current_content.add_child(lobby_status)
 	host_button = _button("HOST A MATCH", _host_match, true)
 	current_content.add_child(host_button)
@@ -220,12 +247,28 @@ func _build_lobby() -> void:
 	lobby_address.placeholder_text = "Host local IP  ·  e.g. 192.168.1.12"
 	lobby_address.custom_minimum_size.y = 56
 	lobby_address.add_theme_font_size_override("font_size", 16)
+	lobby_address.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER_DECIMAL
+	lobby_address.text_submitted.connect(func(_text: String): _join_match())
 	current_content.add_child(lobby_address)
 	current_content.add_child(_button("JOIN MATCH", _join_match, false))
-	current_content.add_child(_label("Port %d  •  Only scores and match state are shared." % PORT, 12, MUTED))
+	current_content.add_child(_label("Port %d  •  Only rep counts and match state are shared." % PORT, 12, MUTED))
 
 func _build_calibration() -> void:
 	var data: Dictionary = LEVELS[current_level - 1]
+	if mode == "online":
+		var is_host := multiplayer.multiplayer_peer != null and multiplayer.is_server()
+		current_content.add_child(_label("WI-FI MATCH  /  %d SECONDS" % data.seconds, 24, LIME))
+		current_content.add_child(_label("Most valid reps when time runs out wins.", 16, ORANGE))
+		current_content.add_child(preload("res://scripts/camera_preview.gd").new())
+		current_content.add_child(_card("POSITIONING", "Prop the phone in portrait mode at a side angle. Keep your shoulder, arm and hip in the guide."))
+		if is_host:
+			current_content.add_child(_label("Guest connected. Both phones start together.", 15, LIME))
+			current_content.add_child(_button("MATCH LENGTH  ·  %d SEC" % data.seconds, _cycle_match_length, false))
+			current_content.add_child(_button("START MATCH  →", _start_challenge, true))
+		else:
+			current_content.add_child(_label("Connected. Get into position — the host starts the match.", 15, LIME))
+		current_content.add_child(_button("LEAVE MATCH", _return_to_menu, false))
+		return
 	current_content.add_child(_label("LEVEL %02d  /  %d REPS" % [current_level, data.goal], 24, LIME))
 	current_content.add_child(_label("TIME LIMIT   %d SECONDS" % data.seconds, 16, ORANGE))
 	current_content.add_child(preload("res://scripts/camera_preview.gd").new())
@@ -236,18 +279,22 @@ func _build_calibration() -> void:
 	current_content.add_child(_button("BACK TO LEVELS", func(): _show_screen("levels", "Choose a level", "02 / Solo campaign"), false))
 
 func _build_game() -> void:
-	current_content.add_child(_label("LEVEL %02d  /  TARGET %d" % [current_level, LEVELS[current_level - 1].goal], 16, MUTED))
+	var seconds: int = LEVELS[current_level - 1].seconds
+	if mode == "online":
+		current_content.add_child(_label("WI-FI MATCH  /  MOST REPS IN %d SEC" % seconds, 16, MUTED))
+	else:
+		current_content.add_child(_label("LEVEL %02d  /  TARGET %d" % [current_level, LEVELS[current_level - 1].goal], 16, MUTED))
 	var count := _label("%02d" % reps, 82, LIME)
 	count.name = "RepValue"
 	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	current_content.add_child(count)
 	current_content.add_child(_label("VALID REPS", 14, MUTED))
-	var timer_label := _label("START IN %d" % ceili(countdown) if countdown > 0.0 else "%02d SEC" % ceili(remaining), 38, Color.WHITE)
+	var timer_label := _label(_timer_text(), 38, Color.WHITE)
 	timer_label.name = "TimerValue"
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	current_content.add_child(timer_label)
 	if mode == "online":
-		var rival := _label("RIVAL   %02d   •   %s" % [opponent_score, opponent_status], 16, ORANGE)
+		var rival := _label(_rival_text(), 16, ORANGE)
 		rival.name = "OpponentValue"
 		current_content.add_child(rival)
 	else:
@@ -265,7 +312,11 @@ func _build_game() -> void:
 	else:
 		current_content.add_child(_button("LOG PRACTICE REP  +1", _log_rep, true))
 		current_content.add_child(_label("Practice input: this build has no pose tracker, so reps are logged by hand.", 12, MUTED))
-	current_content.add_child(_button("PAUSE", _pause_game, false))
+	if mode == "online":
+		# No pause online: it would desynchronize the two match clocks.
+		current_content.add_child(_button("LEAVE MATCH", _return_to_menu, false))
+	else:
+		current_content.add_child(_button("PAUSE", _pause_game, false))
 
 func _build_pause() -> void:
 	current_content.add_child(_label("TAKE A BREATH.", 28, Color.WHITE))
@@ -275,26 +326,47 @@ func _build_pause() -> void:
 	current_content.add_child(_button("QUIT TO MENU", _return_to_menu, false))
 
 func _build_result() -> void:
+	if mode == "online":
+		_build_online_result()
+		return
 	var goal: int = LEVELS[current_level - 1].goal
 	var cleared := reps >= goal
 	current_content.add_child(_label("LEVEL %02d" % current_level, 15, MUTED))
-	if mode == "online":
-		current_content.add_child(_label("MATCH COMPLETE", 34, LIME))
-		current_content.add_child(_card("MATCH RESULT", "You: %d   /   Rival: %d\n%s   •   %.1f sec" % [reps, opponent_score, _online_outcome(), elapsed]))
-	else:
-		var campaign_done := cleared and current_level == LEVELS.size()
-		var headline := "CAMPAIGN COMPLETE" if campaign_done else ("LEVEL CLEARED" if cleared else "TRY AGAIN")
-		current_content.add_child(_label(headline, 34, LIME if cleared else ORANGE))
-		var stats := get_level_stats(current_level)
-		current_content.add_child(_card("YOUR RESULT", "%d / %d valid reps   •   %.1f sec elapsed\nBest %d   •   Attempt %d" % [reps, goal, elapsed, stats.best, stats.attempts]))
-		if campaign_done:
-			current_content.add_child(_card("ALL FIVE LEVELS", "You cleared the full campaign. Replay any level to beat your best."))
-		elif not cleared:
-			current_content.add_child(_label("Need %d more. Go all the way down and fully back up for each rep." % (goal - reps), 14, MUTED))
+	var campaign_done := cleared and current_level == LEVELS.size()
+	var headline := "CAMPAIGN COMPLETE" if campaign_done else ("LEVEL CLEARED" if cleared else "TRY AGAIN")
+	current_content.add_child(_label(headline, 34, LIME if cleared else ORANGE))
+	var stats := get_level_stats(current_level)
+	current_content.add_child(_card("YOUR RESULT", "%d / %d valid reps   •   %.1f sec elapsed\nBest %d   •   Attempt %d" % [reps, goal, elapsed, stats.best, stats.attempts]))
+	if campaign_done:
+		current_content.add_child(_card("ALL FIVE LEVELS", "You cleared the full campaign. Replay any level to beat your best."))
+	elif not cleared:
+		current_content.add_child(_label("Need %d more. Go all the way down and fully back up for each rep." % (goal - reps), 14, MUTED))
 	current_content.add_child(_button("RETRY", _restart_challenge, true))
-	if cleared and mode == "offline" and current_level < LEVELS.size():
+	if cleared and current_level < LEVELS.size():
 		current_content.add_child(_button("NEXT LEVEL  →", func(): _prepare_level(current_level + 1), false))
 	current_content.add_child(_button("MENU", _return_to_menu, false))
+
+func _build_online_result() -> void:
+	current_content.add_child(_label("WI-FI MATCH  /  %d SEC" % LEVELS[current_level - 1].seconds, 15, MUTED))
+	if disconnect_reason != "":
+		current_content.add_child(_label("MATCH ENDED", 34, ORANGE))
+		current_content.add_child(_card("DISCONNECTED", disconnect_reason + " No campaign progress was changed."))
+		current_content.add_child(_button("BACK TO MENU", _return_to_menu, true))
+		return
+	var outcome := online_outcome()
+	current_content.add_child(_label(outcome, 34, LIME if outcome != "RIVAL WINS" else ORANGE))
+	var result_card := _card("MATCH RESULT", "You: %d   /   Rival: %d" % [reps, opponent_score])
+	result_card.name = "MatchResult"
+	current_content.add_child(result_card)
+	if rejected_updates > 0:
+		current_content.add_child(_label("The host ignored %d implausible guest score update(s)." % rejected_updates, 13, ORANGE))
+	current_content.add_child(_label("Online results don't change campaign unlocks.", 13, MUTED))
+	if peer_connected:
+		current_content.add_child(_button("REMATCH", _restart_challenge, true))
+		current_content.add_child(_label("Either player can start a rematch; both phones count down together.", 12, MUTED))
+	else:
+		current_content.add_child(_label("Your rival has left, so a rematch isn't available.", 14, ORANGE))
+	current_content.add_child(_button("LEAVE MATCH", _return_to_menu, false))
 
 func _build_settings() -> void:
 	current_content.add_child(_label("SOUND", 18, Color.WHITE))
@@ -305,9 +377,11 @@ func _build_settings() -> void:
 func _build_credits() -> void:
 	current_content.add_child(_label("PUSH-UP BATTLE", 26, LIME))
 	current_content.add_child(_label("A bodyweight arcade prototype for the ITSD 85 mobile-game lab.", 16, Color.WHITE))
-	current_content.add_child(_card("ASSETS & LICENSES", "Interface, copy and vector icon are original project assets. No third-party audio or artwork is bundled."))
-	current_content.add_child(_card("TEAM", "Add team names, roles and any later model/plugin credits to docs/CREDITS.md."))
+	current_content.add_child(_card("ASSETS & LICENSES", "Interface, copy and vector icon are original project assets. Pose tracking uses Google ML Kit Pose Detection and AndroidX CameraX; see docs/CREDITS.md."))
+	current_content.add_child(_card("TEAM", "Add team names and roles to docs/CREDITS.md."))
 	current_content.add_child(_button("DONE", func(): _show_screen("menu", "Push-up Battle", "Your training floor"), false))
+
+# --- Challenge flow ------------------------------------------------------------
 
 func _prepare_level(level_num: int) -> void:
 	if level_num > highest_unlocked:
@@ -317,16 +391,22 @@ func _prepare_level(level_num: int) -> void:
 	_show_screen("calibration", "Set your position", "03 / Prepare")
 
 func _start_challenge() -> void:
-	var data: Dictionary = LEVELS[current_level - 1]
+	if mode == "online" and not peer_connected:
+		_show_lobby("Your rival is no longer connected. Host or join again.", false)
+		return
 	reps = 0
 	opponent_score = 0
 	opponent_status = "Ready"
-	remaining = data.seconds
+	remaining = match_seconds()
 	elapsed = 0.0
-	countdown = 3.0 if mode == "online" else OFFLINE_GET_READY
+	countdown = ONLINE_GET_READY if mode == "online" else OFFLINE_GET_READY
 	_last_countdown_tick = ceili(countdown)
+	_grace_time = 0.0
 	match_finished = false
 	match_active = true
+	rejected_updates = 0
+	disconnect_reason = ""
+	score_validator.reset()
 	_rep_tracker.reset()
 	tracker_message = ""
 	if mode == "online" and multiplayer.is_server():
@@ -342,15 +422,21 @@ func begin_remote_match(level_num: int, id: String) -> void:
 	_start_challenge()
 
 func _log_rep() -> void:
-	if not match_active or screen_name != "game" or countdown > 0.0:
-		return
-	_apply_rep(reps + 1)
+	_try_add_rep(reps + 1)
 
-func _apply_rep(total: int) -> void:
+func _on_detected_rep(total: int) -> void:
+	if total > reps:
+		_try_add_rep(total)
+
+## Reps only count while the clock is running: not during the countdown,
+## not after time is up, and not while paused.
+func _try_add_rep(total: int) -> void:
+	if not match_active or screen_name != "game" or countdown > 0.0 or remaining <= 0.0:
+		return
 	reps = total
 	_play_sound(1.0)
 	_refresh_game_labels()
-	if mode == "online" and multiplayer.multiplayer_peer != null:
+	if mode == "online" and multiplayer.multiplayer_peer != null and peer_connected:
 		if multiplayer.is_server():
 			rpc("receive_score", reps, match_id)
 		else:
@@ -358,29 +444,27 @@ func _apply_rep(total: int) -> void:
 	if mode == "offline" and reps >= LEVELS[current_level - 1].goal:
 		_end_offline_challenge()
 
+## Guest -> host: the guest's own rep count. Validated before it counts.
 @rpc("any_peer", "call_remote", "reliable")
 func submit_score(score: int, id: String) -> void:
-	if not multiplayer.is_server() or not match_active or id != match_id:
+	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() == 1:
 		return
-	if multiplayer.get_remote_sender_id() != 1:
-		opponent_score = maxi(opponent_score, clampi(score, 0, LEVELS[current_level - 1].goal))
-		opponent_status = "Playing"
-		rpc("receive_score", reps, match_id)
-
-@rpc("authority", "call_remote", "reliable")
-func receive_score(score: int, id: String) -> void:
-	if id != match_id or not match_active:
+	if id != match_id or match_finished:
 		return
-	if multiplayer.is_server():
-		opponent_score = clampi(score, 0, LEVELS[current_level - 1].goal)
-	else:
-		opponent_score = clampi(score, 0, LEVELS[current_level - 1].goal)
+	var match_clock := elapsed - countdown  # Negative while the host is still counting down.
+	score_validator.submit(score, match_clock, match_seconds())
+	opponent_score = score_validator.accepted
 	opponent_status = "Playing"
 	_refresh_game_labels()
 
-func _on_detected_rep(total: int) -> void:
-	if match_active and screen_name == "game" and total > reps:
-		_apply_rep(total)
+## Host -> guest: the host's rep count for the live rival display.
+@rpc("authority", "call_remote", "reliable")
+func receive_score(score: int, id: String) -> void:
+	if id != match_id or match_finished:
+		return
+	opponent_score = maxi(0, score)
+	opponent_status = "Playing"
+	_refresh_game_labels()
 
 func _on_pose_sample(depth: float, confidence: float, dt: float) -> void:
 	if screen_name != "game" or not match_active or countdown > 0.0:
@@ -402,6 +486,16 @@ func _on_tracking_changed(is_tracking: bool) -> void:
 		tracking_label.text = tracker_message
 		tracking_label.add_theme_color_override("font_color", LIME if is_tracking else ORANGE)
 
+func _timer_text() -> String:
+	if countdown > 0.0:
+		return "START IN %d" % ceili(countdown)
+	if remaining <= 0.0:
+		return "TIME!" if mode == "offline" or multiplayer.multiplayer_peer == null or multiplayer.is_server() else "TIME!  WAITING FOR HOST"
+	return "%02d SEC" % ceili(remaining)
+
+func _rival_text() -> String:
+	return "RIVAL   %02d   •   %s" % [opponent_score, opponent_status]
+
 func _refresh_game_labels() -> void:
 	var rep_label := find_child("RepValue", true, false) as Label
 	var timer_label := find_child("TimerValue", true, false) as Label
@@ -410,9 +504,9 @@ func _refresh_game_labels() -> void:
 	if rep_label:
 		rep_label.text = "%02d" % reps
 	if timer_label:
-		timer_label.text = "START IN %d" % ceili(countdown) if countdown > 0.0 else "%02d SEC" % ceili(remaining)
+		timer_label.text = _timer_text()
 	if opponent_label:
-		opponent_label.text = "RIVAL   %02d   •   %s" % [opponent_score, opponent_status]
+		opponent_label.text = _rival_text()
 	if tracking_label:
 		tracking_label.text = tracker_message
 
@@ -431,47 +525,48 @@ func _end_offline_challenge() -> void:
 	_play_sound(1.45 if cleared else 0.72)
 	_show_screen("result", "Your result", "05 / Score")
 
+# --- Online match ----------------------------------------------------------------
+
+## Host decides the final scores and sends the same numbers to both phones;
+## each phone derives its outcome from them, so the results always agree.
 func _finish_online_match() -> void:
 	if match_finished:
 		return
 	match_finished = true
 	match_active = false
-	var winner := "TIE"
-	if reps > opponent_score:
-		winner = "HOST WINS"
-	elif opponent_score > reps:
-		winner = "GUEST WINS"
-	rpc("show_online_result", reps, opponent_score, winner, match_id)
+	opponent_score = score_validator.accepted
+	rejected_updates = score_validator.rejected
+	rpc("show_online_result", reps, opponent_score, rejected_updates, match_id)
+	_play_sound(1.45 if reps >= opponent_score else 0.72)
 	_show_screen("result", "Match complete", "05 / Score")
 
 @rpc("authority", "call_remote", "reliable")
-func show_online_result(host_score: int, guest_score: int, winner: String, id: String) -> void:
+func show_online_result(host_score: int, guest_score: int, rejected: int, id: String) -> void:
 	if id != match_id:
 		return
 	match_finished = true
 	match_active = false
-	if multiplayer.is_server():
-		opponent_score = guest_score
-	else:
-		# Host score is displayed as the rival's score on the joining phone.
-		opponent_score = host_score
-		reps = guest_score
-		_remote_winner = "TIE" if winner == "TIE" else ("RIVAL WINS" if winner == "HOST WINS" else "YOU WIN")
-	if multiplayer.is_server():
-		_remote_winner = winner
+	# The host's verdict replaces the guest's local count.
+	reps = guest_score
+	opponent_score = host_score
+	rejected_updates = rejected
+	_play_sound(1.45 if reps >= opponent_score else 0.72)
 	_show_screen("result", "Match complete", "05 / Score")
 
-var _remote_winner := ""
+func match_seconds() -> float:
+	return match_seconds_override if match_seconds_override > 0.0 else float(LEVELS[current_level - 1].seconds)
 
-func _online_outcome() -> String:
-	if _remote_winner != "":
-		return _remote_winner
+func online_outcome() -> String:
 	if reps == opponent_score:
 		return "TIE"
 	return "YOU WIN" if reps > opponent_score else "RIVAL WINS"
 
+func _cycle_match_length() -> void:
+	current_level = current_level % LEVELS.size() + 1
+	_show_screen("calibration", "Set your position", "03 / Host match")
+
 func _pause_game() -> void:
-	if screen_name != "game":
+	if screen_name != "game" or mode == "online":
 		return
 	match_active = false
 	_show_screen("pause", "Paused", "Workout on hold")
@@ -480,15 +575,20 @@ func _resume_game() -> void:
 	if screen_name != "pause":
 		return
 	match_active = true
-	if mode == "offline":
-		# Give the player time to get back into position before the clock runs.
-		countdown = RESUME_GET_READY
-		_last_countdown_tick = ceili(countdown)
+	# Give the player time to get back into position before the clock runs.
+	countdown = RESUME_GET_READY
+	_last_countdown_tick = ceili(countdown)
 	_show_screen("game", "Challenge on", "04 / Move")
 
 func _restart_challenge() -> void:
-	if mode == "online" and not multiplayer.is_server():
-		rpc_id(1, "request_rematch", match_id)
+	if mode == "online":
+		if not peer_connected:
+			_show_lobby("Your rival is no longer connected. Host or join again.", false)
+		elif multiplayer.is_server():
+			_start_challenge()
+		else:
+			rpc_id(1, "request_rematch", match_id)
+			opponent_status = "Rematch requested"
 		return
 	_start_challenge()
 
@@ -511,25 +611,39 @@ func _return_to_menu() -> void:
 	_disconnect_peer()
 	_show_screen("menu", "Push-up Battle", "Your training floor")
 
+func _show_lobby(message: String, positive: bool) -> void:
+	mode = "online"
+	opponent_status = message
+	_show_screen("lobby", "Find your rival", "02 / Same Wi-Fi")
+	_set_lobby_status(message, positive)
+
 func _host_match() -> void:
 	_disconnect_peer()
 	var peer := ENetMultiplayerPeer.new()
+	peer.set_bind_ip(host_bind_ip)
 	var error := peer.create_server(PORT, 1)
 	if error != OK:
-		_set_lobby_status("Could not host on this network. Check Wi-Fi and try again.", false)
+		_set_lobby_status("Could not host on port %d. Another app may be using it; check Wi-Fi and try again." % PORT, false)
 		return
 	multiplayer.multiplayer_peer = peer
 	mode = "online"
+	current_level = 1
 	peer_connected = false
 	match_active = false
-	opponent_status = "Waiting for player"
-	_set_lobby_status("Host ready on port %d. Share your local IP." % PORT, true)
+	var addresses := local_ipv4_addresses()
+	if addresses.is_empty():
+		_set_lobby_status("Hosting, but no Wi-Fi address was found. Connect this phone to Wi-Fi.", false)
+	else:
+		_set_lobby_status("Hosting. On the other phone, join:  %s" % "  or  ".join(addresses), true)
 
 func _join_match() -> void:
 	_disconnect_peer()
-	var address := lobby_address.text.strip_edges() if lobby_address else ""
+	var address := lobby_address.text.strip_edges() if is_instance_valid(lobby_address) else ""
 	if address.is_empty():
-		_set_lobby_status("Enter the host phone's local IP address.", false)
+		_set_lobby_status("Enter the IP shown on the host phone.", false)
+		return
+	if not address.is_valid_ip_address() or ":" in address:
+		_set_lobby_status("\"%s\" isn't an IPv4 address. It looks like 192.168.1.12." % address, false)
 		return
 	var peer := ENetMultiplayerPeer.new()
 	var error := peer.create_client(address, PORT)
@@ -538,51 +652,89 @@ func _join_match() -> void:
 		return
 	multiplayer.multiplayer_peer = peer
 	mode = "online"
-	opponent_status = "Connecting"
+	_connect_attempt += 1
+	var attempt := _connect_attempt
 	_set_lobby_status("Connecting to %s…" % address, true)
+	get_tree().create_timer(CONNECT_TIMEOUT).timeout.connect(func(): _on_connect_timeout(attempt, address))
 
-func _on_peer_connected(_id: int) -> void:
+func _on_connect_timeout(attempt: int, address: String) -> void:
+	if attempt != _connect_attempt or peer_connected or multiplayer.multiplayer_peer == null:
+		return
+	if multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTING:
+		return
+	_disconnect_peer()
+	_set_lobby_status("No host answered at %s. Check the IP, that the other phone tapped HOST, and that both are on the same Wi-Fi (guest networks often block this)." % address, false)
+
+## Private IPv4 addresses this phone can be reached at on the local network.
+static func local_ipv4_addresses() -> PackedStringArray:
+	var found := PackedStringArray()
+	for address in IP.get_local_addresses():
+		if ":" in address or not address.is_valid_ip_address():
+			continue
+		if address.begins_with("192.168.") or address.begins_with("10."):
+			found.append(address)
+		elif address.begins_with("172."):
+			var second := address.split(".")[1].to_int()
+			if second >= 16 and second <= 31:
+				found.append(address)
+	return found
+
+func _configure_peer_timeout(id: int) -> void:
+	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
+	if enet == null:
+		return
+	var packet_peer := enet.get_peer(id)
+	if packet_peer != null:
+		packet_peer.set_timeout(32, PEER_TIMEOUT_MIN_MS, PEER_TIMEOUT_MAX_MS)
+
+func _on_peer_connected(id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	_configure_peer_timeout(id)
 	peer_connected = true
 	opponent_status = "Connected"
-	if multiplayer.is_server():
-		current_level = 1
-		_show_screen("calibration", "Set your position", "03 / Host match")
-		current_content.add_child(_label("Guest connected. Both players will start together.", 15, LIME))
-		current_content.add_child(_button("START MATCH", _start_challenge, true))
-	else:
-		_set_lobby_status("Connected. Waiting for host to start.", true)
+	mode = "online"
+	_show_screen("calibration", "Set your position", "03 / Host match")
 
 func _on_connected_to_server() -> void:
+	_configure_peer_timeout(1)
 	peer_connected = true
 	opponent_status = "Connected"
-	_set_lobby_status("Connected. Waiting for host to start.", true)
+	mode = "online"
+	_show_screen("calibration", "Set your position", "03 / Join match")
 
 func _on_peer_disconnected(_id: int) -> void:
 	peer_connected = false
-	if screen_name == "game" or screen_name == "pause":
-		match_active = false
-		match_finished = true
-		_show_screen("result", "Match ended", "Connection lost")
-		current_content.add_child(_card("DISCONNECTED", "Your opponent left the match. No campaign progress was changed."))
-		current_content.add_child(_button("BACK TO MENU", _return_to_menu, true))
-	else:
-		_set_lobby_status("Player disconnected. You can host or join again.", false)
-		opponent_status = "Disconnected"
+	opponent_status = "Disconnected"
+	if screen_name in ["game", "pause"] and not match_finished:
+		_end_match_early("Your rival left the match.")
+	elif screen_name == "result":
+		_show_screen("result", "Match complete", "05 / Score")
+	elif mode == "online" and multiplayer.multiplayer_peer != null:
+		# Still hosting: a new guest can join.
+		_show_lobby("Your guest left. Still hosting — another phone can join.", false)
+		var addresses := local_ipv4_addresses()
+		if not addresses.is_empty():
+			_set_lobby_status("Your guest left. Still hosting at  %s" % "  or  ".join(addresses), false)
 
 func _on_connection_failed() -> void:
 	_disconnect_peer()
-	_set_lobby_status("Host could not be reached. Check both phones are on the same Wi-Fi.", false)
+	_set_lobby_status("Host could not be reached. Check the IP and that both phones are on the same Wi-Fi.", false)
 
 func _on_server_disconnected() -> void:
+	_disconnect_peer()
+	if screen_name in ["game", "pause"] and not match_finished:
+		_end_match_early("Lost connection to the host.")
+	elif screen_name == "result":
+		_show_screen("result", "Match complete", "05 / Score")
+	else:
+		_show_lobby("The host closed the match. Host or join again.", false)
+
+func _end_match_early(reason: String) -> void:
 	match_active = false
 	match_finished = true
-	_disconnect_peer()
-	if screen_name in ["game", "pause"]:
-		_show_screen("result", "Match ended", "Connection lost")
-		current_content.add_child(_card("DISCONNECTED", "Host connection lost. No campaign progress was changed."))
-		current_content.add_child(_button("BACK TO MENU", _return_to_menu, true))
-	else:
-		_set_lobby_status("Host disconnected. Return to menu and try again.", false)
+	disconnect_reason = reason
+	_show_screen("result", "Match ended", "Connection lost")
 
 func _set_lobby_status(message: String, positive: bool) -> void:
 	opponent_status = message
@@ -591,12 +743,11 @@ func _set_lobby_status(message: String, positive: bool) -> void:
 		lobby_status.add_theme_color_override("font_color", LIME if positive else ORANGE)
 
 func _disconnect_peer() -> void:
+	_connect_attempt += 1
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
 	peer_connected = false
-	match_finished = false
-	_remote_winner = ""
 
 func _notification(what: int) -> void:
 	match what:
@@ -615,7 +766,9 @@ func _notification(what: int) -> void:
 ## Android back button / Escape: pause a level, step back from a screen, or quit from the menu.
 func _go_back() -> void:
 	if screen_name == "game":
-		_pause_game()
+		if mode == "offline":
+			_pause_game()
+		# Online: ignored so a stray back press can't abandon a match. Use LEAVE MATCH.
 	elif screen_name == "pause":
 		_resume_game()
 	elif screen_name in ["title", "menu"]:
@@ -624,6 +777,8 @@ func _go_back() -> void:
 		get_tree().quit()
 	else:
 		_return_to_menu()
+
+# --- Save data -------------------------------------------------------------------
 
 func get_level_stats(level_num: int) -> Dictionary:
 	var stats: Dictionary = level_stats.get(level_num, {})
@@ -656,6 +811,8 @@ func _save_data() -> void:
 	var temp_path := save_path + ".tmp"
 	if cfg.save(temp_path) == OK:
 		DirAccess.rename_absolute(temp_path, save_path)
+
+# --- UI helpers ------------------------------------------------------------------
 
 func _button(text: String, action: Callable, primary := false) -> Button:
 	var button := Button.new()

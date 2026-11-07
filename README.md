@@ -10,11 +10,11 @@ Open this folder in Godot 4.7 or later and run the project. The project is set t
 
 - Offline campaign, level goals/timers, results, retry/next/menu actions and saved unlocks are implemented.
 - Settings and credits screens are included.
-- Online host/join uses Godot ENet on port `27045`. The host starts the shared level and publishes the match result. Both phones must be on the same Wi-Fi; the joining player enters the host's local IP.
+- Online host/join uses Godot ENet on port `27045`. Both phones must be on the same Wi-Fi. The host screen shows the IP to type on the guest phone. The host picks the match length, starts the match, checks the guest's reported reps for plausibility, and publishes one result that both phones display. Online results never change campaign unlocks. See `docs/TECHNICAL_DECISIONS.md`.
 - **Pose tracking:** the `PushUpPose` Android plugin (`android-plugin/`) runs Google ML Kit's bundled pose model on the phone through CameraX. `scripts/pose_provider.gd` (autoload `Pose`) turns landmarks into a depth signal that drives `scripts/rep_tracker.gd` (top → down → return cycle with confidence gating). When tracking is lost, the in-progress rep is discarded and the game shows a recovery hint. Thresholds still need tuning on real phones; see `docs/TECHNICAL_DECISIONS.md`.
 - `scripts/camera_preview.gd` shows the plugin's local preview with a pose skeleton and framing guide. Builds without the plugin (desktop) show the practice rep input instead.
-- Headless tests: `godot --headless --path . --script res://tests/test_rep_tracker.gd` (also `test_main_flow.gd`).
-- The online prototype shares score data but still needs testing on two physical phones, including network failure, simultaneous completion and host validation against forged scores.
+- Headless tests: `godot --headless --path . --script res://tests/test_rep_tracker.gd` (also `test_main_flow.gd` and `test_score_validator.gd`). Two-process online test: `powershell -File tests/run_online_test.ps1`.
+- The online match passes a host-plus-guest test on one PC, but it still needs a same-Wi-Fi test on two physical phones.
 - Camera, pose and install behavior have not yet been verified on an Android phone.
 
 Raw video is not part of the multiplayer protocol. Pose detection runs locally; camera frames are never uploaded or saved.
