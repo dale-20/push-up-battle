@@ -61,7 +61,7 @@ func _run_host() -> void:
 	if not await _wait_until(func(): return main.peer_connected, 20.0, "guest to connect"):
 		return
 	_check("host on positioning screen", main.screen_name, "calibration")
-	_check("host sees START MATCH", _has_button_text("START MATCH"), true)
+	_check("host sees START MATCH", _has_button_text("Start match"), true)
 
 	# Match 1
 	main._start_challenge()
@@ -102,7 +102,7 @@ func _run_guest() -> void:
 	main._join_match()
 	if not await _wait_until(func(): return main.screen_name == "calibration", 20.0, "connection to host"):
 		return
-	_check("guest waits for host (no start button)", _has_button_text("START MATCH"), false)
+	_check("guest waits for host (no start button)", _has_button_text("Start match"), false)
 
 	# Match 1
 	if not await _wait_until(func(): return main.screen_name == "game", 20.0, "host to start match 1"):

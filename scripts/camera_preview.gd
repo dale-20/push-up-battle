@@ -5,14 +5,16 @@ extends VBoxContainer
 ## Without the plugin it falls back to a plain Godot CameraServer preview.
 ## Frames are displayed locally only; they are never saved or transmitted.
 
-const INK := Color("101a1d")
-const MUTED := Color("9caeaa")
-const ORANGE := Color("ff895f")
-const LIME := Color("d5fa70")
+const INK := Color("1c1c1e")
+const MUTED := Color("98989f")
+const ORANGE := Color("ff9f0a")
+const LIME := Color("30d158")
 
 ## Set before adding to the tree to make a smaller in-game preview.
 var preview_height := 290.0
 var show_title := true
+## Grow past preview_height to fill the parent's free vertical space.
+var fill := false
 
 var _preview: Control
 var _texture_rect: TextureRect
@@ -22,22 +24,29 @@ var _camera_texture: CameraTexture
 var _permission_pending := false
 
 func _ready() -> void:
-	add_theme_constant_override("separation", 10)
+	add_theme_constant_override("separation", 12)
 	if show_title:
 		var title := Label.new()
-		title.text = "LIVE CAMERA PREVIEW"
-		title.add_theme_font_size_override("font_size", 13)
-		title.add_theme_color_override("font_color", ORANGE)
+		title.text = "LIVE CAMERA"
+		title.add_theme_font_size_override("font_size", 21)
+		title.add_theme_color_override("font_color", MUTED)
 		add_child(title)
-	_preview = Control.new()
+	# A rounded panel that clips the camera image to its corners.
+	var frame := Panel.new()
+	var frame_style := StyleBoxFlat.new()
+	frame_style.bg_color = INK
+	frame_style.set_corner_radius_all(28)
+	frame_style.corner_detail = 12
+	frame.add_theme_stylebox_override("panel", frame_style)
+	frame.clip_children = CanvasItem.CLIP_CHILDREN_AND_DRAW
+	_preview = frame
 	_preview.custom_minimum_size = Vector2(0, preview_height)
 	_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_preview.clip_contents = true
+	if fill:
+		size_flags_vertical = Control.SIZE_EXPAND_FILL
+		_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(_preview)
-	var placeholder := ColorRect.new()
-	placeholder.color = INK
-	placeholder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_preview.add_child(placeholder)
 	_texture_rect = TextureRect.new()
 	_texture_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -54,7 +63,7 @@ func _ready() -> void:
 	_preview.add_child(_overlay)
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status.add_theme_font_size_override("font_size", 14)
+	_status.add_theme_font_size_override("font_size", 23)
 	_status.add_theme_color_override("font_color", MUTED)
 	add_child(_status)
 	if Pose.available:

@@ -19,11 +19,25 @@ const HIP := [23, 24]
 const MIN_LIKELIHOOD := 0.35
 ## Exponential smoothing weight for the newest depth sample.
 const SMOOTHING := 0.5
+## Facing the phone, shoulder width / shoulder-to-wrist distance at the top is
+## about 0.65; side-on the shoulders overlap (~0.1-0.3). Hysteresis keeps the
+## view from flipping mid-rep, when the arms foreshorten.
+const FRONT_ENTER_RATIO := 0.5
+const FRONT_EXIT_RATIO := 0.3
+## Typical shoulder-to-wrist length in shoulder widths. Front-view depth is the
+## shoulder drop toward the hands in units of this length, so the top reads ~0
+## and a full rep ~0.8 (the tracker only uses movement from the top anyway).
+const FRONT_ARM_RATIO := 1.5
+## Consecutive frames that must agree before the view switches. Phone trials
+## showed single-frame flips mid-rep, which would mix the two depth scales.
+const VIEW_SWITCH_FRAMES := 3
 
 var available := false
 var running := false
 ## "ok", "no_body", "arm_hidden" or "too_far" for the latest frame.
 var last_reason := "no_body"
+## True while the player faces the phone (front view) rather than side-on.
+var front_view := false
 var status := ""
 var landmarks := PackedFloat32Array()
 var aspect := 0.75
@@ -32,6 +46,7 @@ var preview_texture: ImageTexture
 var _plugin: Object
 var _smoothed := NAN
 var _last_ms := 0
+var _view_votes := 0
 var _permission_pending := false
 
 func _ready() -> void:
@@ -64,12 +79,40 @@ func stop() -> void:
 
 ## Converts one frame of landmarks into a depth signal.
 ## [param points] holds 33 * (x, y, likelihood); x and y are in units of image
-## height with y pointing down. Depth is the fraction of arm length the
-## shoulder has dropped toward the wrist: ~0 at the top, ~0.7 at the bottom.
-static func analyze(points: PackedFloat32Array) -> Dictionary:
-	var result := {"depth": NAN, "confidence": 0.0, "reason": "no_body"}
+## height with y pointing down. Depth grows as the shoulders drop toward the
+## hands: ~0 at the top, ~0.7-0.8 at the bottom of a full rep.
+## Side-on, the drop is measured against arm length. Facing the phone the arms
+## point at the camera and look shorter as they bend, so the drop is measured
+## against shoulder width instead. [param was_front] is the previous frame's
+## view, for hysteresis; the result's "front" holds this frame's view.
+static func analyze(points: PackedFloat32Array, was_front := false) -> Dictionary:
+	var result := {"depth": NAN, "confidence": 0.0, "reason": "no_body", "front": was_front}
 	if points.size() < LANDMARK_COUNT * 3:
 		return result
+	var front_conf := minf(
+		minf(_likelihood(points, SHOULDER[0]), _likelihood(points, SHOULDER[1])),
+		minf(_likelihood(points, WRIST[0]), _likelihood(points, WRIST[1])))
+	if front_conf >= MIN_LIKELIHOOD:
+		var shoulder_l := _point(points, SHOULDER[0])
+		var shoulder_r := _point(points, SHOULDER[1])
+		var wrist_l := _point(points, WRIST[0])
+		var wrist_r := _point(points, WRIST[1])
+		var width := shoulder_l.distance_to(shoulder_r)
+		var reach := maxf(shoulder_l.distance_to(wrist_l), shoulder_r.distance_to(wrist_r))
+		var ratio := width / maxf(reach, 0.001)
+		var front := ratio > (FRONT_EXIT_RATIO if was_front else FRONT_ENTER_RATIO)
+		result.front = front
+		if front:
+			result.confidence = front_conf
+			if width < 0.03:
+				result.reason = "too_far"
+				return result
+			var gap := (wrist_l.y + wrist_r.y) * 0.5 - (shoulder_l.y + shoulder_r.y) * 0.5
+			result.depth = clampf(1.0 - gap / (FRONT_ARM_RATIO * width), -0.3, 1.3)
+			result.reason = "ok"
+			return result
+	else:
+		result.front = false
 	var best_side := -1
 	var best_conf := 0.0
 	for side in 2:
@@ -100,11 +143,11 @@ static func analyze(points: PackedFloat32Array) -> Dictionary:
 static func reason_hint(reason: String) -> String:
 	match reason:
 		"arm_hidden":
-			return "Your arm is out of view. Turn side-on to the phone, then hold the top position."
+			return "Your arms are out of view. Keep both shoulders and hands in the frame, then hold the top position."
 		"too_far":
 			return "You are too far away. Move closer so your upper body fills the guide."
 		_:
-			return "No body detected. Get back into the frame side-on, then hold the top position."
+			return "No body detected. Get back into the frame, then hold the top position."
 
 static func _likelihood(points: PackedFloat32Array, index: int) -> float:
 	return points[index * 3 + 2]
@@ -123,6 +166,8 @@ func _reset_signal() -> void:
 	_smoothed = NAN
 	_last_ms = 0
 	last_reason = "no_body"
+	front_view = false
+	_view_votes = 0
 	landmarks = PackedFloat32Array()
 
 func _on_permission_result(permission: String, granted: bool) -> void:
@@ -137,13 +182,23 @@ func _on_permission_result(permission: String, granted: bool) -> void:
 func _on_pose_frame(points: PackedFloat32Array, width: int, height: int) -> void:
 	if not running:
 		return
-	var now := Time.get_ticks_msec()
-	var dt := 0.0 if _last_ms == 0 else clampf((now - _last_ms) / 1000.0, 0.0, 0.25)
-	_last_ms = now
 	landmarks = points
 	if height > 0:
 		aspect = float(width) / float(height)
-	var result := analyze(points)
+	var result := analyze(points, front_view)
+	if result.front != front_view and result.reason == "ok":
+		_view_votes += 1
+		if _view_votes < VIEW_SWITCH_FRAMES:
+			# Probably a one-frame glitch: skip it rather than mix depth scales.
+			landmarks_updated.emit(landmarks, aspect)
+			return
+		# Real switch. The two views use different scales; don't blend across it.
+		front_view = result.front
+		_smoothed = NAN
+	_view_votes = 0
+	var now := Time.get_ticks_msec()
+	var dt := 0.0 if _last_ms == 0 else clampf((now - _last_ms) / 1000.0, 0.0, 0.25)
+	_last_ms = now
 	last_reason = result.reason
 	if result.reason == "ok":
 		_smoothed = result.depth if is_nan(_smoothed) else lerpf(_smoothed, result.depth, SMOOTHING)
@@ -165,7 +220,7 @@ func _on_preview_frame(rgba: PackedByteArray, width: int, height: int) -> void:
 func _on_camera_status(message: String) -> void:
 	match message:
 		"started":
-			_set_status("Camera on. Get side-on so your shoulder, arm and hip are visible.")
+			_set_status("Camera on. Face the phone with your shoulders and hands in view.")
 		"permission_missing":
 			running = false
 			_set_status("Camera permission is needed to count reps.")

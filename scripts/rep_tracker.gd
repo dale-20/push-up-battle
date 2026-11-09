@@ -13,8 +13,10 @@ signal tracking_changed(is_tracking: bool)
 enum Phase { WAITING_FOR_TOP, AT_TOP, LOWERING, AT_BOTTOM, RISING }
 
 ## Depth below the top position required before the bottom counts.
-## Half reps (about 0.3) must stay under this. Tune on real devices.
-const DEFAULT_DOWN_DELTA := 0.40
+## Half reps (about 0.3) must stay under this. Lowered from 0.40 after a
+## 2026-11-09 phone trial: full reps bottomed at 0.42-0.87 and one real rep
+## that peaked at 0.45 was missed.
+const DEFAULT_DOWN_DELTA := 0.35
 ## The player must come back within this distance of the top to finish a rep.
 const DEFAULT_RETURN_DELTA := 0.15
 const TOP_STABLE_SECONDS := 0.16

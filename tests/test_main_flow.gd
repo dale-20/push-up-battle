@@ -39,7 +39,7 @@ func _run() -> void:
 	_check("calibration screen", main.screen_name, "calibration")
 	main._start_challenge()
 	_check("game screen", main.screen_name, "game")
-	_check("practice button shown without plugin", _has_button_text(main, "LOG PRACTICE REP"), true)
+	_check("practice button shown without plugin", _has_button_text(main, "Log practice rep"), true)
 	_check("offline get-ready countdown", main.countdown, main.OFFLINE_GET_READY)
 	main._log_rep()
 	_check("reps ignored during countdown", main.reps, 0)
@@ -49,7 +49,7 @@ func _run() -> void:
 	_check("level 1 ends on goal", main.screen_name, "result")
 	_check("level 2 unlocked", main.highest_unlocked, 2)
 	_check("level 1 stats", main.get_level_stats(1), {"attempts": 1, "clears": 1, "best": 5})
-	_check("next level button offered", _has_button_text(main, "NEXT LEVEL"), true)
+	_check("next level button offered", _has_button_text(main, "Next level"), true)
 
 	# Timer runs out on Level 2: no unlock, attempt recorded.
 	main._prepare_level(2)
@@ -71,7 +71,7 @@ func _run() -> void:
 	_check("time-out shows result", main.screen_name, "result")
 	_check("level 3 still locked after failing level 2", main.highest_unlocked, 2)
 	_check("level 2 stats", main.get_level_stats(2), {"attempts": 1, "clears": 0, "best": 3})
-	_check("no next level after a fail", _has_button_text(main, "NEXT LEVEL"), false)
+	_check("no next level after a fail", _has_button_text(main, "Next level"), false)
 
 	# Sound preference and progress survive a restart.
 	main._toggle_sound()
@@ -90,8 +90,8 @@ func _run() -> void:
 	_skip_countdown(reopened)
 	for i in 20:
 		reopened._log_rep()
-	_check("campaign complete headline", _has_label_text(reopened, "CAMPAIGN COMPLETE"), true)
-	_check("no next level after level 5", _has_button_text(reopened, "NEXT LEVEL"), false)
+	_check("campaign complete headline", _has_label_text(reopened, "Campaign complete"), true)
+	_check("no next level after level 5", _has_button_text(reopened, "Next level"), false)
 	_check("unlock capped at 5", reopened.highest_unlocked, 5)
 	reopened._go_back()
 	_check("back from result returns to menu", reopened.screen_name, "menu")

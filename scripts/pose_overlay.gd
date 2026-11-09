@@ -8,8 +8,8 @@ const BONES := [
 	[11, 23], [12, 24], [23, 24], [23, 25], [24, 26],
 ]
 const MIN_LIKELIHOOD := 0.35
-const LINE_COLOR := Color(0.84, 0.98, 0.44, 0.95)
-const JOINT_COLOR := Color(1.0, 0.54, 0.37, 1.0)
+const LINE_COLOR := Color(0.19, 0.82, 0.35, 0.95)
+const JOINT_COLOR := Color(1.0, 1.0, 1.0, 1.0)
 
 var points := PackedFloat32Array()
 var aspect := 0.75

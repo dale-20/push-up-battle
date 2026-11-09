@@ -134,3 +134,31 @@ func _test_analyze_geometry() -> void:
 	_check("hidden elbow gives low confidence", hidden.confidence < RepTrackerScript.LOST_CONFIDENCE, true)
 	var empty: Dictionary = PoseScript.analyze(PackedFloat32Array())
 	_check("no landmarks reports no_body", empty.reason, "no_body")
+	_check("one-sided landmarks use the side view", top.front, false)
+	_test_front_view_geometry()
+
+## Facing the phone: shoulders 0.2 apart, hands 1.5 shoulder widths below.
+func _front_landmarks(shoulder_y: float, hip_likelihood := 0.0) -> PackedFloat32Array:
+	var p := PackedFloat32Array()
+	p.resize(33 * 3)
+	for entry in [[11, Vector2(0.4, shoulder_y)], [12, Vector2(0.6, shoulder_y)],
+			[15, Vector2(0.4, 0.60)], [16, Vector2(0.6, 0.60)]]:
+		var i: int = entry[0]
+		var v: Vector2 = entry[1]
+		p[i * 3] = v.x
+		p[i * 3 + 1] = v.y
+		p[i * 3 + 2] = 0.95
+	p[23 * 3 + 2] = hip_likelihood
+	p[24 * 3 + 2] = hip_likelihood
+	return p
+
+func _test_front_view_geometry() -> void:
+	var top: Dictionary = PoseScript.analyze(_front_landmarks(0.30))
+	_check("front top pose detected as front view", top.front, true)
+	_check("front top pose ok without a visible hip", top.reason, "ok")
+	_check("front top pose depth ~0", absf(top.depth) < 0.05, true)
+	var bottom: Dictionary = PoseScript.analyze(_front_landmarks(0.51), true)
+	_check("front bottom pose depth ~0.7", absf(bottom.depth - 0.70) < 0.05, true)
+	_check("front view holds at the bottom (hysteresis)", bottom.front, true)
+	var half: Dictionary = PoseScript.analyze(_front_landmarks(0.39), true)
+	_check("front half rep (~0.3) stays under down_delta", half.depth - top.depth < RepTrackerScript.DEFAULT_DOWN_DELTA, true)

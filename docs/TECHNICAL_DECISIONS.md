@@ -17,9 +17,17 @@ depth = 1 - (wrist.y - shoulder.y) / (|shoulder-elbow| + |elbow-wrist|)
 
 This is the fraction of arm length the shoulder has dropped toward the wrist: about 0.0 at the top of a push-up and about 0.6-0.8 at the bottom of a full rep. Because it is divided by arm length, it doesn't depend on how far the player is from the phone. The side (left or right arm) with the higher minimum likelihood across shoulder, elbow, wrist and hip is used, and that minimum is the confidence. Depth is lightly smoothed (EMA 0.5).
 
-`scripts/rep_tracker.gd` counts a rep for top → down past `down_delta` (0.40) held for 0.08 s → back within `return_delta` (0.15) of the top held for 0.16 s. Half reps (~0.3) do not count. When confidence drops below 0.35, the in-progress rep is discarded and counting resumes only after a stable top position. The game shows a specific recovery hint: no body, arm hidden, or too far.
+**Facing the phone (front view).** Players can also face the camera. Then the arms point toward the lens and foreshorten as they bend, so the side formula barely moves: a phone trial facing the camera read only 0.16–0.29 for full reps. The hip is also usually hidden. When both shoulders and both wrists are visible and shoulder width / shoulder-to-wrist distance is above 0.5 (with hysteresis: it stays in front view until the ratio drops under 0.3), depth is instead:
 
-The thresholds are starting points from geometry, **not** yet tuned on the team's phones. Tune `down_delta`/`return_delta` from the Milestone 2 device trials.
+```text
+depth = 1 - (mean wrist.y - mean shoulder.y) / (1.5 * shoulder width)
+```
+
+Shoulder width does not change during a rep, and 1.5 is a typical shoulder-to-wrist length in shoulder widths, so the scale roughly matches the side view. The hip is not required. The confidence is the minimum likelihood of both shoulders and both wrists. A view switch needs 3 frames in a row, because single-frame flips happened mid-rep in trials. Trial (2026-11-09, same phone, facing it): top about −0.15, bottoms 0.53–0.60, and 5 of 5 reps counted.
+
+`scripts/rep_tracker.gd` counts a rep for top → down past `down_delta` (0.35) held for 0.08 s → back within `return_delta` (0.15) of the top held for 0.16 s. Half reps (~0.3) do not count. When confidence drops below 0.35, the in-progress rep is discarded and counting resumes only after a stable top position. The game shows a specific recovery hint: no body, arm hidden, or too far.
+
+The thresholds started from geometry. First phone trial (2026-11-09, OPPO CPH2457, front camera, side-on): tracking confidence stayed 0.83–1.00; the top read about 0.02 and full-rep bottoms 0.42–0.87. One real rep peaked at 0.45 and was missed at 0.40, so `down_delta` was lowered to 0.35. `return_delta` (0.15) worked unchanged. Confirm on more phones and players.
 
 ## Wi-Fi match
 
