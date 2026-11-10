@@ -43,6 +43,18 @@ The Android export preset (`export_presets.cfg`) has Camera permission enabled a
 
 Then export to `build/android/PushUpBattle.apk` and install it on at least two phones before collecting lab evidence.
 
+## iPhone build
+
+iPhone pose counting uses `ios-plugin/`, a GDExtension that runs Apple's Vision body-pose detection and sends the same signals as the Android plugin. iPhone apps must be compiled on a Mac, and the team has none, so GitHub Actions builds it on a cloud Mac (`.github/workflows/ios.yml`):
+
+1. On GitHub, open **Actions → iOS build → Run workflow**. It also runs on pushes to `main` that change the game. A build takes about 15–25 minutes.
+2. Open the finished run and download the **PushUpBattle-ios-unsigned** artifact (a zip containing `PushUpBattle-unsigned.ipa`).
+3. On Windows, install [iTunes](https://www.apple.com/itunes/) (the version from Apple's site, not the Microsoft Store) and [Sideloadly](https://sideloadly.io).
+4. Connect the iPhone by USB and tap **Trust** on the phone. In Sideloadly, choose the `.ipa`, enter an Apple ID, and click **Start**.
+5. On the iPhone, open **Settings → General → VPN & Device Management**, trust your Apple ID, and turn on **Developer Mode** if iOS asks (Settings → Privacy & Security, iOS 16+).
+
+With a free Apple ID the app stops opening after 7 days; reinstall it with Sideloadly. Requires iOS 14 or later. On a Mac, `ios-plugin/build.sh <path-to-Godot>` builds the plugin locally.
+
 ## Team evidence
 
 Use the templates under `docs/` to record real device runs and anonymized playtests. Do not fill in test outcomes until the team has observed them. Record the tester's consent and avoid collecting identifying information.

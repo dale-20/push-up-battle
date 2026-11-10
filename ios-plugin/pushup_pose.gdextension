@@ -1,0 +1,11 @@
+; Copied to addons/pushup_pose_ios/ by ios-plugin/build.sh. It is kept out of
+; res:// until then, so Windows/Android builds don't try to load an iOS-only library.
+[configuration]
+
+entry_symbol = "pushup_pose_library_init"
+compatibility_minimum = "4.3"
+
+[libraries]
+
+ios.debug = "res://addons/pushup_pose_ios/PushUpPose.xcframework"
+ios.release = "res://addons/pushup_pose_ios/PushUpPose.xcframework"

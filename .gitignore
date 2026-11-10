@@ -10,3 +10,7 @@
 /android-plugin/build/
 /android-plugin/plugin/build/
 /android-plugin/local.properties
+
+# iOS plugin build outputs (built on macOS by ios-plugin/build.sh / CI)
+/addons/pushup_pose_ios/
+/ios-plugin/.build/

@@ -1,0 +1,113 @@
+# Builds an unsigned iPhone app (.ipa) on a GitHub-hosted Mac, since the team
+# has no Mac. Install it from Windows with Sideloadly and a free Apple ID
+# (see README "iPhone build"). Run it from the Actions tab ("Run workflow"),
+# or it runs on pushes to main that touch the game or the iOS plugin.
+name: iOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "ios-plugin/**"
+      - ".github/workflows/ios.yml"
+      - "scripts/**"
+      - "scenes/**"
+      - "project.godot"
+      - "export_presets.cfg"
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # Must match the editor the team exports Android with (Godot 4.7 stable).
+      GODOT_RELEASE: "4.7-stable"
+      GODOT_TEMPLATE_DIR: "4.7.stable"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: pip install scons
+
+      - name: Download Godot and export templates
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot"
+          cd "$RUNNER_TEMP/godot"
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}"
+          curl -fsSL -o godot.zip "$base/Godot_v${GODOT_RELEASE}_macos.universal.zip"
+          unzip -q godot.zip
+          curl -fsSL -o templates.tpz "$base/Godot_v${GODOT_RELEASE}_export_templates.tpz"
+          unzip -q templates.tpz
+          dest="$HOME/Library/Application Support/Godot/export_templates/${GODOT_TEMPLATE_DIR}"
+          mkdir -p "$dest"
+          mv templates/* "$dest/"
+          echo "GODOT=$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+
+      - name: Cache godot-cpp build
+        uses: actions/cache@v4
+        with:
+          path: ios-plugin/.build/godot-cpp
+          key: godot-cpp-ios-${{ env.GODOT_RELEASE }}-v1
+
+      - name: Build PushUpPose iOS plugin
+        run: bash ios-plugin/build.sh "$GODOT"
+
+      - name: Import project
+        # Import reports errors for the Android-only plugin and the iOS-only
+        # library on this Mac editor; those are expected and not fatal.
+        run: |
+          "$GODOT" --headless --path . --import || true
+          echo "--- extension_list.cfg"
+          cat .godot/extension_list.cfg || echo "(missing)"
+
+      - name: Export Xcode project
+        run: |
+          mkdir -p build/ios
+          "$GODOT" --headless --path . --export-release "iOS" build/ios/PushUpBattle.ipa
+          ls -la build/ios
+
+      - name: Build unsigned app
+        run: |
+          cd build/ios
+          xcodebuild -list -project PushUpBattle.xcodeproj
+          xcodebuild -project PushUpBattle.xcodeproj -scheme PushUpBattle \
+            -configuration Release -sdk iphoneos -destination "generic/platform=iOS" \
+            -derivedDataPath dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Check and package IPA
+        run: |
+          app="$(find build/ios/dd/Build/Products -maxdepth 2 -name '*.app' | head -n 1)"
+          echo "App: $app"
+          plist="$app/Info.plist"
+          # Make sure the permission prompts exist even if a preset key changes name.
+          plutil -replace NSCameraUsageDescription -string "Push-Up Battle uses the camera to count your push-ups. Video stays on this phone." "$plist"
+          plutil -replace NSLocalNetworkUsageDescription -string "Push-Up Battle connects to a friend's phone on the same Wi-Fi for matches." "$plist"
+          if [ ! -f "$app/Frameworks/PushUpPose.framework/PushUpPose" ]; then
+            echo "::warning::PushUpPose.framework was not embedded by the export; copying it in."
+            mkdir -p "$app/Frameworks"
+            cp -R addons/pushup_pose_ios/PushUpPose.xcframework/ios-arm64/PushUpPose.framework "$app/Frameworks/"
+          fi
+          echo "--- Frameworks"; ls -la "$app/Frameworks"
+          exe="$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          echo "--- rpaths"; otool -l "$exe" | grep -A2 LC_RPATH || true
+          mkdir -p ipa/Payload
+          cp -R "$app" ipa/Payload/
+          (cd ipa && zip -qry ../PushUpBattle-unsigned.ipa Payload)
+          ls -la PushUpBattle-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PushUpBattle-ios-unsigned
+          path: PushUpBattle-unsigned.ipa
+          retention-days: 14

@@ -7,6 +7,14 @@
 - **Camera ownership:** the plugin owns the only camera session (CameraX `ImageAnalysis`, about 640×480, front camera, mirrored). It sends Godot a 240 px-tall RGBA thumbnail for the positioning and in-game preview, so Godot's `CameraServer` is no longer used when the plugin is present. This avoids two components competing for the camera. Builds without the plugin (desktop) fall back to `CameraServer` preview plus the practice-rep input.
 - **Privacy:** only landmark numbers and the preview thumbnail cross into Godot. Nothing is saved to storage, and nothing camera-related is part of the multiplayer protocol.
 
+## iPhone pose estimation (built in CI; not yet device-validated)
+
+- **Choice:** Apple Vision `VNDetectHumanBodyPoseRequest` (built into iOS 14+, on-device, no model download) in a GDExtension (`ios-plugin/src/pushup_pose.mm`) that registers the same `PushUpPose` singleton and signals as the Android plugin. `pose_provider.gd`, the front/side views and `RepTracker` are shared and unchanged.
+- **Landmarks:** Vision's 19 joints are mapped onto the ML Kit indices that `pose_provider.gd` reads (shoulders 11/12, elbows 13/14, wrists 15/16, hips 23/24, and so on). The rest stay zero. Coordinates are converted to ML Kit's convention (units of image height, y down). The camera is AVFoundation at 640×480, portrait, mirrored for the front camera.
+- **Open risk:** Vision joint confidence is not calibrated like ML Kit's in-frame likelihood. The shared 0.35 cutoffs (`MIN_LIKELIHOOD`, `LOST_CONFIDENCE`) may need an iOS-specific value after the first iPhone trial.
+- **Build:** the team has no Mac, so `.github/workflows/ios.yml` builds on a GitHub-hosted Mac. It dumps the API from Godot 4.7, builds godot-cpp and the plugin, exports an Xcode project (the iOS preset has `export_project_only`), and runs `xcodebuild` without code signing. Testers sign and install the unsigned `.ipa` with Sideloadly and their own Apple ID (see README). The generated `addons/pushup_pose_ios/` is git-ignored, so Windows and Android builds never see the iOS library.
+- **Cross-platform matches:** Android and iPhone use the same ENet protocol, so mixed matches should work. iOS shows a Local Network permission prompt the first time a match connects. Not yet tested.
+
 ## Rep signal
 
 `scripts/pose_provider.gd` (autoload `Pose`) converts landmarks into one number per frame:
