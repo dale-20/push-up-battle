@@ -65,6 +65,10 @@ func _run_host() -> void:
 	_check("host on positioning screen", main.screen_name, "calibration")
 	_check("host stops advertising once matched", main.discovery.is_advertising(), false)
 	_check("host sees START MATCH", _has_button_text("Start match"), true)
+	_check("host sees match length choices", [_has_button_text("0:30"), _has_button_text("5:00")], [true, true])
+	_check("unknown lengths fall back to 1:00", main.valid_match_length(45), 60)
+	main._set_online_seconds(120)
+	_check("host picked 2:00", main.online_seconds, 120)
 
 	# Match 1
 	main._start_challenge()
@@ -111,6 +115,10 @@ func _run_guest() -> void:
 		return
 	_check("guest waits for host (no start button)", _has_button_text("Start match"), false)
 	_check("guest stops searching after joining", main.discovery.is_browsing(), false)
+	_check("guest can't change the length", _has_button_text("5:00"), false)
+	if not await _wait_until(func(): return main.online_seconds == 120, 10.0, "host's 2:00 match length"):
+		return
+	_check("guest shows the host's length", main._length_label.text, "2:00")
 
 	# Match 1
 	if not await _wait_until(func(): return main.screen_name == "game", 20.0, "host to start match 1"):

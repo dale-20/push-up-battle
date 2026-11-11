@@ -9,6 +9,9 @@ const LEVELS := [
 ]
 const SAVE_PATH := "user://push_up_battle.cfg"
 const PORT := 27045
+## Wi-Fi match lengths the host can pick, in seconds. Most reps at the end wins.
+const MATCH_LENGTHS := [30, 60, 90, 120, 180, 300]
+const DEFAULT_MATCH_LENGTH := 60
 
 # --- Design tokens ---------------------------------------------------------------
 # Apple's dark-mode system palette: true-black canvas, graphite elevated surfaces,
@@ -95,6 +98,11 @@ var host_button: Button
 var lobby_status: Label
 ## Shown to rivals in their "Matches nearby" list. Saved on this device.
 var player_name := ""
+## Wi-Fi match length in seconds. The host picks it (and it's saved there);
+## the guest receives the host's choice.
+var online_seconds := DEFAULT_MATCH_LENGTH
+var _length_row: GridContainer
+var _length_label: Label
 ## Finds hosts on the same Wi-Fi or hotspot (guest) and answers probes (host).
 var discovery := LanDiscovery.new()
 var _nearby_list: VBoxContainer
@@ -259,7 +267,7 @@ func _screen_heading() -> Array:
 		"hosting": return ["Waiting for a rival", "Your match is open. Keep this screen up."]
 		"calibration":
 			if mode == "online":
-				return ["Get in position", "Wi-Fi match  ·  %d seconds" % data.seconds]
+				return ["Get in position", "Most reps when time runs out wins."]
 			return ["Level %d" % current_level, "%d reps in %d seconds" % [data.goal, data.seconds]]
 		"pause": return ["Paused", "Take a breath. The clock is stopped."]
 		"settings": return ["Settings", ""]
@@ -434,6 +442,9 @@ func _build_hosting() -> void:
 	current_content.add_child(name_field)
 	current_content.add_child(_footnote("Rivals see this in their Matches nearby list."))
 	current_content.add_child(_spacer(8))
+	current_content.add_child(_length_picker())
+	current_content.add_child(_footnote("Most reps when time runs out wins. You can still change this before you start."))
+	current_content.add_child(_spacer(8))
 	current_content.add_child(_section("Hosting on"))
 	_network_group = _group()
 	current_content.add_child(_network_group)
@@ -503,10 +514,13 @@ func _build_calibration() -> void:
 		var is_host := multiplayer.multiplayer_peer != null and multiplayer.is_server()
 		var message := "Guest connected. Both phones start together." if is_host else "Connected. The host starts the match."
 		_status_pill(current_content, message, true)
+		if is_host:
+			current_content.add_child(_length_picker())
+		else:
+			current_content.add_child(_length_display())
 		current_content.add_child(_camera_preview(680.0))
 		current_content.add_child(_tips())
 		if is_host:
-			current_actions.add_child(_button("Match length  ·  %d s" % data.seconds, _cycle_match_length, "secondary"))
 			current_actions.add_child(_button("Start match", _start_challenge, "primary"))
 		current_actions.add_child(_button("Leave match", _return_to_menu, "destructive"))
 		return
@@ -616,7 +630,7 @@ func _build_result() -> void:
 
 func _build_online_result() -> void:
 	current_content.add_child(_spacer(24))
-	current_content.add_child(_section("Wi-Fi match  ·  %d s" % LEVELS[current_level - 1].seconds))
+	current_content.add_child(_section("Wi-Fi match  ·  %s" % _clock_text(int(match_seconds()))))
 	if disconnect_reason != "":
 		current_content.add_child(_label("Match ended", FS_LARGE_TITLE, WARN, _font_display))
 		current_content.add_child(_label(disconnect_reason + " No campaign progress was changed.", FS_BODY, MUTED))
@@ -689,12 +703,12 @@ func _start_challenge() -> void:
 	tracker_message = ""
 	if mode == "online" and multiplayer.is_server():
 		match_id = str(Time.get_ticks_usec())
-		rpc("begin_remote_match", current_level, match_id)
+		rpc("begin_remote_match", online_seconds, match_id)
 	_show_screen("game")
 
 @rpc("authority", "call_remote", "reliable")
-func begin_remote_match(level_num: int, id: String) -> void:
-	current_level = clampi(level_num, 1, LEVELS.size())
+func begin_remote_match(seconds: int, id: String) -> void:
+	online_seconds = valid_match_length(seconds)
 	match_id = id
 	mode = "online"
 	_start_challenge()
@@ -842,16 +856,78 @@ func show_online_result(host_score: int, guest_score: int, rejected: int, id: St
 	_show_screen("result")
 
 func match_seconds() -> float:
-	return match_seconds_override if match_seconds_override > 0.0 else float(LEVELS[current_level - 1].seconds)
+	if match_seconds_override > 0.0:
+		return match_seconds_override
+	if mode == "online":
+		return float(online_seconds)
+	return float(LEVELS[current_level - 1].seconds)
 
+## Highest score when time runs out wins; equal scores tie.
 func online_outcome() -> String:
 	if reps == opponent_score:
 		return "TIE"
 	return "YOU WIN" if reps > opponent_score else "RIVAL WINS"
 
-func _cycle_match_length() -> void:
-	current_level = current_level % LEVELS.size() + 1
-	_show_screen("calibration")
+## Guards lengths that arrive over the network or from an old save.
+static func valid_match_length(seconds: int) -> int:
+	return seconds if seconds in MATCH_LENGTHS else DEFAULT_MATCH_LENGTH
+
+## 90 -> "1:30".
+static func _clock_text(seconds: int) -> String:
+	return "%d:%02d" % [seconds / 60, seconds % 60]
+
+## Host: a row of length chips. Updates in place, so the camera preview keeps running.
+func _length_picker() -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 12)
+	wrap.add_child(_section("Match length"))
+	_length_row = GridContainer.new()
+	_length_row.columns = 3
+	_length_row.add_theme_constant_override("h_separation", 10)
+	_length_row.add_theme_constant_override("v_separation", 10)
+	wrap.add_child(_length_row)
+	_fill_length_row()
+	return wrap
+
+func _fill_length_row() -> void:
+	if not is_instance_valid(_length_row):
+		return
+	for child in _length_row.get_children():
+		child.queue_free()
+	for seconds: int in MATCH_LENGTHS:
+		var chip := _button(_clock_text(seconds), func(): _set_online_seconds(seconds), "primary" if seconds == online_seconds else "secondary")
+		chip.custom_minimum_size = Vector2(0, 84)
+		chip.add_theme_font_override("font", _font_digits)
+		chip.add_theme_font_size_override("font_size", FS_SUBHEAD)
+		_length_row.add_child(chip)
+
+## Guest: the host's chosen length, updated live when the host changes it.
+func _length_display() -> Control:
+	var card := _card_panel()
+	var stack := VBoxContainer.new()
+	stack.add_theme_constant_override("separation", 4)
+	card.add_child(stack)
+	stack.add_child(_section("Match length  ·  set by the host"))
+	_length_label = _label(_clock_text(online_seconds), FS_TITLE, TEXT, _font_digits)
+	stack.add_child(_length_label)
+	return card
+
+func _set_online_seconds(seconds: int) -> void:
+	online_seconds = valid_match_length(seconds)
+	_save_data()
+	_fill_length_row()
+	_sync_match_length()
+
+## Host -> guest: keep the guest's positioning screen showing the right length.
+func _sync_match_length() -> void:
+	if peer_connected and multiplayer.multiplayer_peer != null and multiplayer.is_server():
+		rpc("receive_match_length", online_seconds)
+
+@rpc("authority", "call_remote", "reliable")
+func receive_match_length(seconds: int) -> void:
+	online_seconds = valid_match_length(seconds)
+	if is_instance_valid(_length_label):
+		_length_label.text = _clock_text(online_seconds)
 
 func _pause_game() -> void:
 	if screen_name != "game" or mode == "online":
@@ -978,6 +1054,7 @@ func _on_peer_connected(id: int) -> void:
 	_configure_peer_timeout(id)
 	discovery.stop_advertising()  # One guest per match: stop showing up in lists.
 	peer_connected = true
+	_sync_match_length()
 	opponent_status = "Connected"
 	mode = "online"
 	_show_screen("calibration")
@@ -1096,6 +1173,7 @@ func _load_save() -> void:
 	highest_unlocked = clampi(int(cfg.get_value("progress", "highest_unlocked", 1)), 1, LEVELS.size())
 	sound_enabled = bool(cfg.get_value("settings", "sound_enabled", true))
 	player_name = LanDiscovery.clean_name(str(cfg.get_value("settings", "player_name", "")))
+	online_seconds = valid_match_length(int(cfg.get_value("settings", "match_length", DEFAULT_MATCH_LENGTH)))
 	level_stats.clear()
 	for level_num in range(1, LEVELS.size() + 1):
 		var key := "level_%d" % level_num
@@ -1108,6 +1186,7 @@ func _save_data() -> void:
 	cfg.set_value("progress", "highest_unlocked", highest_unlocked)
 	cfg.set_value("settings", "sound_enabled", sound_enabled)
 	cfg.set_value("settings", "player_name", player_name)
+	cfg.set_value("settings", "match_length", online_seconds)
 	for level_num in level_stats:
 		cfg.set_value("stats", "level_%d" % level_num, get_level_stats(level_num))
 	# Write to a temp file then swap it in, so a crash mid-save can't corrupt progress.
