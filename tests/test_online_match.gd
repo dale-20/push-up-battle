@@ -54,13 +54,16 @@ func _initialize() -> void:
 # --- Host ------------------------------------------------------------------------
 
 func _run_host() -> void:
+	main.player_name = "Host Tester"
 	main._show_lobby("", true)
 	main._host_match()
-	_check("hosting status shown", "Hosting" in main.opponent_status, true)
+	_check("host is on the waiting page", main.screen_name, "hosting")
+	_check("host is advertising", main.discovery.is_advertising(), true)
 	_log("INFO  host would show: %s" % main.opponent_status)
 	if not await _wait_until(func(): return main.peer_connected, 20.0, "guest to connect"):
 		return
 	_check("host on positioning screen", main.screen_name, "calibration")
+	_check("host stops advertising once matched", main.discovery.is_advertising(), false)
 	_check("host sees START MATCH", _has_button_text("Start match"), true)
 
 	# Match 1
@@ -96,13 +99,18 @@ func _run_host() -> void:
 # --- Guest -----------------------------------------------------------------------
 
 func _run_guest() -> void:
+	main.discovery.targets_override = PackedStringArray(["127.0.0.1"])
 	main._show_lobby("", true)
-	await create_timer(1.0).timeout  # let the host open its port
-	main.lobby_address.text = "127.0.0.1"
-	main._join_match()
+	_check("guest is searching for matches", main.discovery.is_browsing(), true)
+	if not await _wait_until(func(): return main.discovery.hosts.has("127.0.0.1"), 10.0, "host to appear in Matches nearby"):
+		return
+	_check("nearby list shows the host's name", main.discovery.hosts["127.0.0.1"].name, "Host Tester")
+	_check("nearby host is listed on screen", _has_button_text("Join"), true)
+	main._join_address("127.0.0.1")
 	if not await _wait_until(func(): return main.screen_name == "calibration", 20.0, "connection to host"):
 		return
 	_check("guest waits for host (no start button)", _has_button_text("Start match"), false)
+	_check("guest stops searching after joining", main.discovery.is_browsing(), false)
 
 	# Match 1
 	if not await _wait_until(func(): return main.screen_name == "game", 20.0, "host to start match 1"):

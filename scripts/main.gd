@@ -46,7 +46,7 @@ const ROW_HEIGHT := 118
 ## so every screen leaves the way it came.
 const SCREEN_DEPTH := {
 	"title": 0, "menu": 1, "mode": 2, "settings": 2, "credits": 2,
-	"levels": 3, "lobby": 3, "calibration": 4, "game": 5, "pause": 6, "result": 6,
+	"levels": 3, "lobby": 3, "hosting": 4, "calibration": 4, "game": 5, "pause": 6, "result": 6,
 }
 ## Screens that keep the pose camera running between them.
 const CAMERA_SCREENS := ["calibration", "game", "pause", "result"]
@@ -93,6 +93,15 @@ var disconnect_reason := ""
 var lobby_address: LineEdit
 var host_button: Button
 var lobby_status: Label
+## Shown to rivals in their "Matches nearby" list. Saved on this device.
+var player_name := ""
+## Finds hosts on the same Wi-Fi or hotspot (guest) and answers probes (host).
+var discovery := LanDiscovery.new()
+var _nearby_list: VBoxContainer
+var _manual_join: VBoxContainer
+var _network_group: PanelContainer
+var _network_signature := ""
+var _network_check := 0.0
 var current_content: VBoxContainer
 var current_actions: VBoxContainer
 var screen_name := "title"
@@ -111,6 +120,9 @@ var _font_digits: Font
 func _ready() -> void:
 	_setup_theme()
 	_load_save()
+	if player_name.is_empty():
+		player_name = "Player %d" % randi_range(10, 99)
+	discovery.hosts_changed.connect(_refresh_nearby)
 	get_tree().auto_accept_quit = false
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -126,6 +138,13 @@ func _ready() -> void:
 	_show_screen("title")
 
 func _process(delta: float) -> void:
+	discovery.poll(delta)
+	if screen_name == "hosting":
+		# The player may switch Wi-Fi or turn on their hotspot while waiting.
+		_network_check += delta
+		if _network_check >= 2.0:
+			_network_check = 0.0
+			_fill_network_group()
 	if screen_name != "game" or not match_active:
 		return
 	if countdown > 0.0:
@@ -168,6 +187,8 @@ func _show_screen(which: String) -> void:
 	screen_name = which
 	if which not in CAMERA_SCREENS:
 		Pose.stop()
+	if which != "lobby":
+		discovery.stop_browsing()
 	for child in get_children():
 		if child != _sound_player:
 			child.queue_free()
@@ -214,6 +235,7 @@ func _show_screen(which: String) -> void:
 		"mode": _build_mode()
 		"levels": _build_levels()
 		"lobby": _build_lobby()
+		"hosting": _build_hosting()
 		"calibration": _build_calibration()
 		"game": _build_game()
 		"pause": _build_pause()
@@ -233,7 +255,8 @@ func _screen_heading() -> Array:
 		"menu": return ["Train", "Pick a mode, set your stance, get moving."]
 		"mode": return ["Choose a mode", ""]
 		"levels": return ["Campaign", "Clear a level to unlock the next one."]
-		"lobby": return ["Wi-Fi duel", "Both phones on the same Wi-Fi. Most valid reps wins."]
+		"lobby": return ["Wi-Fi duel", "Same Wi-Fi or hotspot. Most valid reps wins."]
+		"hosting": return ["Waiting for a rival", "Your match is open. Keep this screen up."]
 		"calibration":
 			if mode == "online":
 				return ["Get in position", "Wi-Fi match  ·  %d seconds" % data.seconds]
@@ -249,7 +272,7 @@ func _build_nav_bar(shell: VBoxContainer) -> void:
 	var nav := HBoxContainer.new()
 	nav.custom_minimum_size.y = 72
 	shell.add_child(nav)
-	if screen_name in ["mode", "levels", "lobby", "settings", "credits"] or (screen_name == "calibration" and mode == "offline"):
+	if screen_name in ["mode", "levels", "lobby", "hosting", "settings", "credits"] or (screen_name == "calibration" and mode == "offline"):
 		var back := _button("‹  Back", _navigate_back, "plain")
 		back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 		back.custom_minimum_size = Vector2(0, 72)
@@ -316,9 +339,9 @@ func _build_mode() -> void:
 		mode = "offline"
 		_show_screen("levels")
 	, _badge("1", ACCENT, INK)))
-	_group_add(group, _row("Wi-Fi duel", "Race a friend on the same network", func():
+	_group_add(group, _row("Wi-Fi duel", "Race a friend on the same Wi-Fi or hotspot", func():
 		mode = "online"
-		_show_lobby("Host a match, or enter the host phone's IP to join.", true)
+		_show_lobby("Host a match, or join one below.", true)
 	, _badge("2", RIVAL, TEXT)))
 	current_content.add_child(group)
 	current_content.add_child(_footnote("Online results never change your campaign unlocks."))
@@ -348,30 +371,131 @@ func _build_lobby() -> void:
 	lobby_status = _status_pill(current_content, opponent_status, true)
 	lobby_status.name = "LobbyStatus"
 	current_content.add_child(_spacer(4))
-	current_content.add_child(_section("Host"))
 	host_button = _button("Host a match", _host_match, "primary")
 	current_content.add_child(host_button)
-	current_content.add_child(_footnote("Your phone shows an address for your rival to type in."))
-	current_content.add_child(_spacer(12))
-	current_content.add_child(_section("Join"))
-	lobby_address = LineEdit.new()
-	lobby_address.placeholder_text = "Host IP, e.g. 192.168.1.12"
-	lobby_address.custom_minimum_size.y = BUTTON_HEIGHT
-	lobby_address.add_theme_font_size_override("font_size", FS_BODY)
-	lobby_address.add_theme_color_override("font_color", TEXT)
-	lobby_address.add_theme_color_override("font_placeholder_color", Color(MUTED, 0.7))
-	lobby_address.add_theme_color_override("caret_color", ACCENT)
-	var field := _box(FILL, 22, 28, 0)
-	lobby_address.add_theme_stylebox_override("normal", field)
-	var focused := field.duplicate() as StyleBoxFlat
-	focused.set_border_width_all(3)
-	focused.border_color = Color(ACCENT, 0.8)
-	lobby_address.add_theme_stylebox_override("focus", focused)
+	current_content.add_child(_spacer(8))
+	current_content.add_child(_section("Matches nearby"))
+	_nearby_list = VBoxContainer.new()
+	_nearby_list.add_theme_constant_override("separation", 12)
+	current_content.add_child(_nearby_list)
+	_refresh_nearby()
+	current_content.add_child(_spacer(8))
+	var manual_group := _group()
+	_group_add(manual_group, _row("Enter IP manually", "If a match doesn't show up", func():
+		_manual_join.visible = not _manual_join.visible
+	))
+	current_content.add_child(manual_group)
+	_manual_join = VBoxContainer.new()
+	_manual_join.add_theme_constant_override("separation", 14)
+	_manual_join.visible = false
+	current_content.add_child(_manual_join)
+	lobby_address = _text_field("Host IP, e.g. 192.168.1.12")
 	lobby_address.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER_DECIMAL
 	lobby_address.text_submitted.connect(func(_text: String): _join_match())
-	current_content.add_child(lobby_address)
-	current_content.add_child(_button("Join match", _join_match, "secondary"))
-	current_content.add_child(_footnote("Port %d  ·  only rep counts and match state are shared." % PORT))
+	_manual_join.add_child(lobby_address)
+	_manual_join.add_child(_button("Join match", _join_match, "secondary"))
+	current_content.add_child(_footnote("Only rep counts and match state are shared."))
+	if discovery.start_browsing() != OK:
+		_set_lobby_status("Can't search this network. Enter the host's IP manually.", false)
+
+## Rebuilds only the nearby list, so typing in the IP field isn't interrupted.
+func _refresh_nearby() -> void:
+	if screen_name != "lobby" or not is_instance_valid(_nearby_list):
+		return
+	for child in _nearby_list.get_children():
+		child.queue_free()
+	if discovery.hosts.is_empty():
+		var empty := _group()
+		_group_add(empty, _info_row("Looking for matches…", "Your rival taps Host a match on the same Wi-Fi. No Wi-Fi? They turn on Mobile Hotspot and you connect to it."))
+		_nearby_list.add_child(empty)
+		return
+	var group := _group()
+	var ips := discovery.hosts.keys()
+	ips.sort()
+	for ip: String in ips:
+		var host: Dictionary = discovery.hosts[ip]
+		_group_add(group, _row(host.name, ip, func(): _join_address(ip), _badge(host.name.left(1).to_upper(), RIVAL, TEXT), "Join  ›"))
+	_nearby_list.add_child(group)
+
+func _build_hosting() -> void:
+	lobby_status = _status_pill(current_content, opponent_status, true)
+	lobby_status.name = "LobbyStatus"
+	var pulse := lobby_status.create_tween().set_loops().set_trans(Tween.TRANS_SINE)
+	pulse.tween_property(lobby_status, "modulate:a", 0.45, 0.9)
+	pulse.tween_property(lobby_status, "modulate:a", 1.0, 0.9)
+	current_content.add_child(_spacer(4))
+	current_content.add_child(_section("Your name"))
+	var name_field := _text_field("Your name")
+	name_field.text = player_name
+	name_field.max_length = LanDiscovery.MAX_NAME
+	name_field.text_changed.connect(_set_player_name)
+	name_field.text_submitted.connect(func(_text: String): _save_data())
+	name_field.focus_exited.connect(_save_data)
+	current_content.add_child(name_field)
+	current_content.add_child(_footnote("Rivals see this in their Matches nearby list."))
+	current_content.add_child(_spacer(8))
+	current_content.add_child(_section("Hosting on"))
+	_network_group = _group()
+	current_content.add_child(_network_group)
+	_network_signature = ""
+	_network_check = 0.0
+	_fill_network_group()
+	current_content.add_child(_spacer(8))
+	current_content.add_child(_section("How your rival joins"))
+	var tips := _group()
+	_group_add(tips, _info_row("Same Wi-Fi", "They open Wi-Fi duel and tap your name under Matches nearby."))
+	_group_add(tips, _info_row("No Wi-Fi?", "Turn on Mobile Hotspot in your phone's Settings, then have your rival connect to it. Mobile data isn't used for the match."))
+	current_content.add_child(tips)
+	current_actions.add_child(_button("Cancel hosting", _cancel_hosting, "destructive"))
+
+## Lists this phone's Wi-Fi / hotspot addresses; only rebuilds when they change.
+func _fill_network_group() -> void:
+	if not is_instance_valid(_network_group):
+		return
+	var networks := LanDiscovery.describe_networks(IP.get_local_interfaces())
+	var signature := str(networks)
+	if signature == _network_signature:
+		return
+	_network_signature = signature
+	var stack := _network_group.get_child(0)
+	for child in stack.get_children():
+		child.queue_free()
+	if networks.is_empty():
+		_group_add(_network_group, _info_row("No network", "Connect to Wi-Fi, or turn on Mobile Hotspot."))
+		_set_lobby_status("Hosting, but this phone isn't on Wi-Fi or sharing a hotspot yet.", false)
+		return
+	for network: Dictionary in networks:
+		var kind := "Your hotspot" if network.hotspot else "Wi-Fi"
+		_group_add(_network_group, _info_row(kind, "%s  ·  manual join address" % network.address))
+	if opponent_status.begins_with("Hosting, but this phone isn't"):
+		_set_lobby_status("Waiting for a rival to join…", true)
+
+func _set_player_name(text: String) -> void:
+	var cleaned := LanDiscovery.clean_name(text)
+	player_name = cleaned if not cleaned.is_empty() else "Player"
+	discovery.advertised_name = player_name
+
+func _cancel_hosting() -> void:
+	_save_data()
+	_disconnect_peer()
+	_show_lobby("Hosting cancelled. Host a match, or join one below.", true)
+
+## Rounded single-line text input.
+func _text_field(placeholder: String) -> LineEdit:
+	var field := LineEdit.new()
+	field.placeholder_text = placeholder
+	field.custom_minimum_size.y = BUTTON_HEIGHT
+	field.add_theme_font_size_override("font_size", FS_BODY)
+	field.add_theme_color_override("font_color", TEXT)
+	field.add_theme_color_override("font_placeholder_color", Color(MUTED, 0.7))
+	field.add_theme_color_override("caret_color", ACCENT)
+	var normal := _box(FILL, 22, 28, 0)
+	field.add_theme_stylebox_override("normal", normal)
+	var focused := normal.duplicate() as StyleBoxFlat
+	focused.set_border_width_all(3)
+	focused.border_color = Color(ACCENT, 0.8)
+	field.add_theme_stylebox_override("focus", focused)
+	return field
 
 func _build_calibration() -> void:
 	var data: Dictionary = LEVELS[current_level - 1]
@@ -787,21 +911,24 @@ func _host_match() -> void:
 	peer.set_bind_ip(host_bind_ip)
 	var error := peer.create_server(PORT, 1)
 	if error != OK:
-		_set_lobby_status("Could not host on port %d. Another app may be using it; check Wi-Fi and try again." % PORT, false)
+		_set_lobby_status("Could not host on port %d. Another app may be using it; check Wi-Fi or your hotspot and try again." % PORT, false)
 		return
 	multiplayer.multiplayer_peer = peer
 	mode = "online"
 	current_level = 1
 	peer_connected = false
 	match_active = false
-	var addresses := local_ipv4_addresses()
-	if addresses.is_empty():
-		_set_lobby_status("Hosting, but no Wi-Fi address was found. Connect this phone to Wi-Fi.", false)
+	_show_waiting_room()
+
+## The host's "Waiting for a rival" page, advertised to nearby guests.
+func _show_waiting_room() -> void:
+	if discovery.start_advertising(player_name, PORT, host_bind_ip) != OK:
+		opponent_status = "Hosting, but nearby phones can't see this match. Your rival can enter your address manually."
 	else:
-		_set_lobby_status("Hosting. On the other phone, join  %s" % "  or  ".join(addresses), true)
+		opponent_status = "Waiting for a rival to join…"
+	_show_screen("hosting")
 
 func _join_match() -> void:
-	_disconnect_peer()
 	var address := lobby_address.text.strip_edges() if is_instance_valid(lobby_address) else ""
 	if address.is_empty():
 		_set_lobby_status("Enter the IP shown on the host phone.", false)
@@ -809,6 +936,10 @@ func _join_match() -> void:
 	if not address.is_valid_ip_address() or ":" in address:
 		_set_lobby_status("\"%s\" isn't an IPv4 address. It looks like 192.168.1.12." % address, false)
 		return
+	_join_address(address)
+
+func _join_address(address: String) -> void:
+	_disconnect_peer()
 	var peer := ENetMultiplayerPeer.new()
 	var error := peer.create_client(address, PORT)
 	if error != OK:
@@ -827,21 +958,11 @@ func _on_connect_timeout(attempt: int, address: String) -> void:
 	if multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTING:
 		return
 	_disconnect_peer()
-	_set_lobby_status("No host answered at %s. Check the IP, that the other phone tapped Host, and that both are on the same Wi-Fi (guest networks often block this)." % address, false)
+	_set_lobby_status("No host answered at %s. Check that the other phone is still hosting and that you're on the same Wi-Fi or their hotspot (guest networks often block this)." % address, false)
 
-## Private IPv4 addresses this phone can be reached at on the local network.
+## Private IPv4 addresses this phone can be reached at on Wi-Fi or its hotspot.
 static func local_ipv4_addresses() -> PackedStringArray:
-	var found := PackedStringArray()
-	for address in IP.get_local_addresses():
-		if ":" in address or not address.is_valid_ip_address():
-			continue
-		if address.begins_with("192.168.") or address.begins_with("10."):
-			found.append(address)
-		elif address.begins_with("172."):
-			var second := address.split(".")[1].to_int()
-			if second >= 16 and second <= 31:
-				found.append(address)
-	return found
+	return LanDiscovery.usable_ipv4_addresses(IP.get_local_interfaces())
 
 func _configure_peer_timeout(id: int) -> void:
 	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
@@ -855,6 +976,7 @@ func _on_peer_connected(id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	_configure_peer_timeout(id)
+	discovery.stop_advertising()  # One guest per match: stop showing up in lists.
 	peer_connected = true
 	opponent_status = "Connected"
 	mode = "online"
@@ -875,15 +997,13 @@ func _on_peer_disconnected(_id: int) -> void:
 	elif screen_name == "result":
 		_show_screen("result")
 	elif mode == "online" and multiplayer.multiplayer_peer != null:
-		# Still hosting: a new guest can join.
-		_show_lobby("Your guest left. Still hosting — another phone can join.", false)
-		var addresses := local_ipv4_addresses()
-		if not addresses.is_empty():
-			_set_lobby_status("Your guest left. Still hosting at  %s" % "  or  ".join(addresses), false)
+		# Still hosting: back to the waiting room so another phone can join.
+		_show_waiting_room()
+		_set_lobby_status("Your guest left. Still hosting — another phone can join.", false)
 
 func _on_connection_failed() -> void:
 	_disconnect_peer()
-	_set_lobby_status("Host could not be reached. Check the IP and that both phones are on the same Wi-Fi.", false)
+	_set_lobby_status("Host could not be reached. Check that both phones are on the same Wi-Fi or hotspot.", false)
 
 func _on_server_disconnected() -> void:
 	_disconnect_peer()
@@ -908,6 +1028,7 @@ func _set_lobby_status(message: String, positive: bool) -> void:
 
 func _disconnect_peer() -> void:
 	_connect_attempt += 1
+	discovery.stop_advertising()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
@@ -948,6 +1069,8 @@ func _navigate_back() -> void:
 		"levels", "lobby":
 			_disconnect_peer()
 			_show_screen("mode")
+		"hosting":
+			_cancel_hosting()
 		"calibration":
 			if mode == "online":
 				_return_to_menu()
@@ -972,6 +1095,7 @@ func _load_save() -> void:
 		return
 	highest_unlocked = clampi(int(cfg.get_value("progress", "highest_unlocked", 1)), 1, LEVELS.size())
 	sound_enabled = bool(cfg.get_value("settings", "sound_enabled", true))
+	player_name = LanDiscovery.clean_name(str(cfg.get_value("settings", "player_name", "")))
 	level_stats.clear()
 	for level_num in range(1, LEVELS.size() + 1):
 		var key := "level_%d" % level_num
@@ -983,6 +1107,7 @@ func _save_data() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("progress", "highest_unlocked", highest_unlocked)
 	cfg.set_value("settings", "sound_enabled", sound_enabled)
+	cfg.set_value("settings", "player_name", player_name)
 	for level_num in level_stats:
 		cfg.set_value("stats", "level_%d" % level_num, get_level_stats(level_num))
 	# Write to a temp file then swap it in, so a crash mid-save can't corrupt progress.
