@@ -14,6 +14,8 @@ config/name="push up battle"
 run/main_scene="res://scenes/main.tscn"
 config/quit_on_go_back=false
 config/features=PackedStringArray("4.7", "Mobile")
+boot_splash/bg_color=Color(0, 0, 0, 1)
+boot_splash/image="res://assets/icon/splash.png"
 config/icon="res://icon.svg"
 
 [autoload]

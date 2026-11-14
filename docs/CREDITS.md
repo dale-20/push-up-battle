@@ -3,7 +3,7 @@
 | Asset | Author/source | License |
 |---|---|---|
 | Interface copy, layout and colors | Push-Up Battle project team | Original project work |
-| App icon | `icon.svg` in this repository | Original project work |
+| App icon, launcher icons and splash logo | `icon.svg` and `assets/icon/` in this repository, rendered by `tools/render_icons.gd` | Original project work |
 | Godot Engine | Godot contributors | MIT License; see https://godotengine.org/license/ |
 | Google ML Kit Pose Detection (bundled base model, `com.google.mlkit:pose-detection:18.0.0-beta5`) | Google | ML Kit Terms of Service; see https://developers.google.com/ml-kit/terms. Beta API. |
 | AndroidX CameraX (`androidx.camera:*:1.4.2`) | The Android Open Source Project | Apache License 2.0 |

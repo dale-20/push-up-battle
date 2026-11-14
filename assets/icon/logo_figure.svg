@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Push-Up Battle mark: athlete at the top of a push-up, with a rep arrow. Transparent background. -->
+  <g transform="translate(0 -34)">
+    <rect x="92" y="374" width="328" height="16" rx="8" fill="#30d158" opacity="0.35"/>
+    <g stroke="#30d158" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M120 352 L324 262 L336 356" stroke-width="38"/>
+    </g>
+    <circle cx="378" cy="228" r="36" fill="#30d158"/>
+    <g stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="18">
+      <path d="M196 236 L196 150"/>
+      <path d="M166 178 L196 148 L226 178"/>
+    </g>
+  </g>
+</svg>
